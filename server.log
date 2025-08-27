@@ -1,5 +1,5 @@
 [dotenv@17.2.1] injecting env (14) from .env -- tip: 📡 version env with Radar: https://dotenvx.com/radar
-[BOOT] 2025-08-27T14:33:16.706Z express 5.1.0
+[BOOT] 2025-08-27T14:32:28.461Z express 5.1.0
 [MOUNT] Casino routes at: /casino/api/v1
 [MOUNT] Casino health at: /casino/api/v1/health
 [MOUNT] Creating RGS router
@@ -24,3 +24,4 @@ RGS_BASE_PATH charCodes: [
   97, 112, 105,  47, 118,
   49
 ]
+[TOP] POST /casino/api/v1/wallet/debit
