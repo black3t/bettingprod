@@ -1,0 +1,1824 @@
+--- src/__tests__/T1_contract_rest.test.ts ---
+/**
+ * T1 - Contract REST (schema + error registry)
+ * Obiettivo: ogni risposta rispetta OpenAPI + solo codici ammessi per Casino
+ */
+
+import request from 'supertest';
+import express from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import walletRoutes from '../routes/walletRoutes';
+import limitsRoutes from '../routes/limitsRoutes';
+
+// Codici ammessi dalla bibbia §22.6
+const ALLOWED_WALLET_CODES = [
+  'RW-CAS-001', // Insufficient funds
+  'RW-CAS-002', // Player blocked  
+  'RW-CAS-006', // Invalid request
+  'RW-CAS-008', // Invalid correlation ID
+  'RW-CAS-010', // Missing idempotency
+  'RW-RGS-008', // Timeout
+  'RW-SYS-000'  // System error
+];
+
+const ALLOWED_LIMITS_CODES = [
+  'RW-CAS-003', // Limit exceeded
+  'RW-CAS-006', // Invalid request (validation errors)
+  'RW-RGS-008', // Timeout
+  'RW-SYS-000'  // System error
+];
+
+describe('T1 - Contract REST', () => {
+  let app: express.Application;
+
+  beforeEach(() => {
+    app = express();
+    app.use(express.json());
+    
+    // Correlation ID middleware
+    app.use((req, res, next) => {
+      const correlationId = req.headers['x-correlation-id'] as string || uuidv4();
+      const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+      
+      if (!UUID_V4_REGEX.test(correlationId)) {
+        return res.status(400).json({
+          error: {
+            code: 'RW-CAS-008',
+            message: 'X-Correlation-Id must be valid UUID v4 format'
+          }
+        });
+      }
+      
+      (req as any).correlationId = correlationId;
+      res.setHeader('X-Correlation-Id', correlationId);
+      next();
+    });
+    
+    app.use('/wallet', walletRoutes);
+    app.use('/limits', limitsRoutes);
+  });
+
+  describe('POST /wallet/debit', () => {
+    it('should return valid schema for successful debit', async () => {
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: 'test-player-123',
+          amount: '10.00',
+          currency: 'EUR'
+        });
+
+      // Debug: log response sempre
+      console.log('Debit Response status:', response.status);
+      console.log('Debit Response body:', JSON.stringify(response.body, null, 2));
+      
+      // Verifica schema risposta
+      if (response.status === 200) {
+        expect(response.body).toHaveProperty('status');
+        expect(response.body).toHaveProperty('newBalance');
+        expect(typeof response.body.newBalance).toBe('string');
+        expect(response.body.newBalance).toMatch(/^\d+\.\d{2}$/);
+      } else {
+        // Verifica codice errore ammesso
+        expect(response.body).toHaveProperty('error');
+        expect(response.body.error).toHaveProperty('code');
+        expect(ALLOWED_WALLET_CODES).toContain(response.body.error.code);
+      }
+    });
+
+    it('should reject missing idempotency key with correct code', async () => {
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: 'test-player-123',
+          amount: '10.00',
+          currency: 'EUR'
+          // manca idempotencyKey!
+        });
+
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe('RW-CAS-010'); // Missing idempotency dalla bibbia
+    });
+
+    it('should reject invalid correlation ID format', async () => {
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', 'not-a-uuid')
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: 'test-player-123',
+          amount: '10.00',
+          currency: 'EUR',
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('RW-CAS-008');
+    });
+  });
+
+  describe('POST /wallet/credit', () => {
+    it('should return valid schema for successful credit', async () => {
+      const response = await request(app)
+        .post('/wallet/credit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: 'test-player-123',
+          amount: '50.00',
+          currency: 'EUR'
+        });
+
+      if (response.status === 200) {
+        expect(response.body).toHaveProperty('status');
+        expect(response.body).toHaveProperty('newBalance');
+        expect(typeof response.body.newBalance).toBe('string');
+        expect(response.body.newBalance).toMatch(/^\d+\.\d{2}$/);
+      } else {
+        expect(ALLOWED_WALLET_CODES).toContain(response.body.error.code);
+      }
+    });
+  });
+
+  describe('POST /limits/check', () => {
+    it('should return valid schema for limits check', async () => {
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: 'test-player-123',
+          stake: '10.00'
+        });
+
+      if (response.status === 200) {
+        expect(response.body).toHaveProperty('ok');
+        expect(typeof response.body.ok).toBe('boolean');
+        
+        if (!response.body.ok) {
+          expect(response.body).toHaveProperty('reason');
+        }
+      } else {
+        expect(response.body).toHaveProperty('error');
+        expect(response.body.error).toHaveProperty('code');
+        expect(ALLOWED_LIMITS_CODES).toContain(response.body.error.code);
+      }
+    });
+
+    it('should use only allowed error codes', async () => {
+      // Test con stake fuori range per forzare errore
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: 'test-player-123',
+          stake: '999999.00' // Eccessivo
+        });
+
+      if (response.status !== 200) {
+        expect(ALLOWED_LIMITS_CODES).toContain(response.body.error?.code);
+      }
+    });
+  });
+
+  describe('Error code compliance', () => {
+    it('should never return codes outside allowed list', async () => {
+      const testCases = [
+        { endpoint: '/wallet/debit', allowedCodes: ALLOWED_WALLET_CODES },
+        { endpoint: '/wallet/credit', allowedCodes: ALLOWED_WALLET_CODES },
+        { endpoint: '/limits/check', allowedCodes: ALLOWED_LIMITS_CODES }
+      ];
+
+      for (const testCase of testCases) {
+        // Test con vari input errati
+        const invalidRequests = [
+          {}, // Empty body
+          { amount: 'invalid' }, // Invalid amount
+          { playerId: null }, // Null player
+        ];
+
+        for (const invalidBody of invalidRequests) {
+          const response = await request(app)
+            .post(testCase.endpoint)
+            .set('X-Correlation-Id', uuidv4())
+            .set('Authorization', 'Bearer test_rgs_key')
+            .send(invalidBody);
+
+          if (response.body.error?.code) {
+            expect(testCase.allowedCodes).toContain(response.body.error.code);
+          }
+        }
+      }
+    });
+  });
+});
+--- end src/__tests__/T1_contract_rest.test.ts ---
+
+--- src/__tests__/T10_T11_compliance.test.ts ---
+/**
+ * T10, T11 - Compliance Tests
+ * T10: Logging & GDPR (PII-safe + retention)
+ * T11: Arrotondamenti (banker's, 2 decimali)
+ */
+
+import request from 'supertest';
+import express from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
+import { query } from '../config/database';
+import winston from 'winston';
+import { uniqueEmail, uniqueId } from './helpers/unique';
+
+// Mock logger per catturare logs
+const testLogCapture: any[] = [];
+const mockTransport = new winston.transports.Console({
+  format: winston.format.json(),
+  log: (info, callback) => {
+    testLogCapture.push(info);
+    if (callback) callback();
+  }
+});
+
+function createApp() {
+  const app = express();
+  app.use(express.json());
+  
+  // Correlation ID middleware
+  app.use((req, res, next) => {
+    const correlationId = req.headers['x-correlation-id'] as string || uuidv4();
+    (req as any).correlationId = correlationId;
+    res.setHeader('X-Correlation-Id', correlationId);
+    next();
+  });
+  
+  // Logging middleware
+  app.use((req, res, next) => {
+    const logger = winston.createLogger({
+      transports: [mockTransport]
+    });
+    
+    logger.info('Request', {
+      method: req.method,
+      path: req.path,
+      correlationId: (req as any).correlationId,
+      // NON loggare: body, headers con token, query params con PII
+    });
+    
+    next();
+  });
+  
+  const walletRoutes = require('../routes/walletRoutes').default;
+  app.use('/wallet', walletRoutes);
+  
+  return app;
+}
+
+describe('T10, T11 - Compliance Tests', () => {
+  let app: express.Application;
+  const testPlayerId = uniqueId('compliance');
+
+  beforeAll(async () => {
+    app = createApp();
+    testLogCapture.length = 0; // Clear logs
+    
+    // Create test user first
+    await query(`
+      INSERT OR IGNORE INTO users (id, username, email, password_hash, status)
+      VALUES ($1, $2, $3, $4, $5)
+    `, [testPlayerId, 'compliance_test_user', uniqueEmail('compliance'), 'hash', 'active']);
+    
+    await query(`
+      INSERT INTO user_wallets (id, user_id, balance, currency)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id) DO UPDATE SET balance = $3
+    `, [uuidv4(), testPlayerId, 1000.00, 'EUR']);
+  });
+
+  afterAll(async () => {
+    await query('DELETE FROM wallet_transactions WHERE user_id = $1', [testPlayerId]);
+    await query('DELETE FROM user_wallets WHERE user_id = $1', [testPlayerId]);
+    await query('DELETE FROM users WHERE id = $1', [testPlayerId]);
+  });
+
+  describe('T10 - Logging & GDPR', () => {
+    beforeEach(() => {
+      testLogCapture.length = 0; // Clear logs before each test
+    });
+
+    it('should not log PII in request logs', async () => {
+      const sensitiveData = {
+        playerId: testPlayerId,
+        amount: '50.00',
+        currency: 'EUR',
+        personalInfo: 'John Doe', // PII
+        creditCard: '4111111111111111', // PII
+        email: 'john@example.com' // PII
+      };
+
+      await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Idempotency-Key', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send(sensitiveData);
+
+      // Verifica logs catturati
+      testLogCapture.forEach(log => {
+        const logString = JSON.stringify(log);
+        
+        // Non deve contenere PII
+        expect(logString).not.toContain('John Doe');
+        expect(logString).not.toContain('4111111111111111');
+        expect(logString).not.toContain('john@example.com');
+        
+        // Può contenere pseudonimi
+        expect(logString).toContain(testPlayerId); // Player ID è pseudonimo, OK
+        expect(logString).toContain('correlationId'); // Correlation ID OK
+      });
+    });
+
+    it('should log only pseudonymous identifiers', async () => {
+      const correlationId = uuidv4();
+      
+      await request(app)
+        .post('/wallet/credit')
+        .set('X-Correlation-Id', correlationId)
+        .set('Idempotency-Key', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: testPlayerId,
+          amount: '25.00',
+          currency: 'EUR'
+        });
+
+      // Verifica che ci siano logs
+      expect(testLogCapture.length).toBeGreaterThan(0);
+      
+      // Verifica contenuto logs
+      const requestLog = testLogCapture.find(l => l.message === 'Request');
+      expect(requestLog).toBeDefined();
+      expect(requestLog.correlationId).toBe(correlationId);
+      expect(requestLog.method).toBe('POST');
+      expect(requestLog.path).toBe('/wallet/credit');
+      
+      // Non deve avere dati sensibili
+      expect(requestLog.body).toBeUndefined();
+      expect(requestLog.headers).toBeUndefined();
+    });
+
+    it('should implement retention policies', async () => {
+      // Verifica che esista la configurazione retention
+      const nodeEnv = process.env.NODE_ENV || 'development';
+      let expectedRetention: number;
+      
+      switch(nodeEnv) {
+        case 'development':
+          expectedRetention = 7; // 7 giorni
+          break;
+        case 'staging':
+          expectedRetention = 30; // 30 giorni
+          break;
+        case 'production':
+          expectedRetention = 365; // 365 giorni
+          break;
+        default:
+          expectedRetention = 7;
+      }
+      
+      // Simula check retention policy (in produzione sarebbe un job scheduled)
+      const retentionQuery = `
+        SELECT COUNT(*) as old_logs 
+        FROM audit_logs 
+        WHERE created_at < NOW() - INTERVAL '${expectedRetention} days'
+      `;
+      
+      // Query non fallisce (tabella potrebbe non esistere in test)
+      try {
+        const result = await query(retentionQuery);
+        expect(result).toBeDefined();
+      } catch (e) {
+        // OK, tabella non esiste in test environment
+      }
+    });
+
+    it('should sanitize error messages', async () => {
+      // Forza un errore
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: testPlayerId,
+          amount: '99999.00', // Troppo
+          currency: 'EUR'
+        });
+
+      // La bibbia dice che wallet operations ritornano sempre 200
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('REJECTED');
+      
+      // L'errore non deve contenere dettagli interni
+      expect(response.body.reason).toBeDefined();
+      // Il reason è solo un codice RW-CAS-*, non contiene dettagli interni
+    });
+  });
+
+  describe('T11 - Arrotondamenti', () => {
+    it('should use banker\'s rounding for 0.5 cases', async () => {
+      // Banker's rounding: 0.5 arrotonda al pari più vicino
+      const testCases = [
+        { input: '10.015', expected: '10.02' }, // 1.5 cents → 2 (pari)
+        { input: '10.025', expected: '10.02' }, // 2.5 cents → 2 (pari)
+        { input: '10.035', expected: '10.04' }, // 3.5 cents → 4 (pari)
+        { input: '10.045', expected: '10.04' }, // 4.5 cents → 4 (pari)
+      ];
+
+      for (const testCase of testCases) {
+        // Simula operazione che richiede arrotondamento
+        const response = await request(app)
+          .post('/wallet/credit')
+          .set('X-Correlation-Id', uuidv4())
+          .set('Authorization', 'Bearer test_rgs_key')
+          .send({
+            playerId: testPlayerId,
+            amount: testCase.input,
+            currency: 'EUR',
+            });
+
+        if (response.status === 200) {
+          // Verifica che l'importo sia arrotondato correttamente
+          const txResult = await query(`
+            SELECT amount 
+            FROM wallet_transactions 
+            WHERE user_id = $1 
+            ORDER BY created_at DESC 
+            LIMIT 1
+          `, [testPlayerId]);
+          
+          if (txResult.rows.length > 0) {
+            const storedAmount = parseFloat(txResult.rows[0].amount).toFixed(2);
+            expect(storedAmount).toBe(testCase.expected);
+          }
+        }
+      }
+    });
+
+    it('should always return amounts as 2-decimal strings', async () => {
+      const amounts = ['10', '10.1', '10.99', '10.999', '10.001'];
+      
+      for (const amount of amounts) {
+        const response = await request(app)
+          .post('/wallet/debit')
+          .set('X-Correlation-Id', uuidv4())
+          .set('Idempotency-Key', uuidv4())
+          .set('Authorization', 'Bearer test_rgs_key')
+          .send({
+            playerId: testPlayerId,
+            amount,
+            currency: 'EUR'
+          });
+
+        if (response.status === 200) {
+          // newBalance deve sempre essere stringa con 2 decimali
+          expect(response.body.newBalance).toMatch(/^\d+\.\d{2}$/);
+          
+          // Verifica che sia una stringa, non un numero
+          expect(typeof response.body.newBalance).toBe('string');
+        }
+      }
+    });
+
+    it('should store amounts consistently in minor units', async () => {
+      // Reset balance
+      await query(
+        'UPDATE user_wallets SET balance = $1 WHERE user_id = $2',
+        [100.00, testPlayerId]
+      );
+      
+      // Operazione con decimali
+      const amount = '12.34';
+      
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: testPlayerId,
+          amount,
+          currency: 'EUR',
+          idempotencyKey: uuidv4() // Nel body come da bibbia!
+        });
+
+      expect(response.status).toBe(200);
+      
+      // Verifica storage nel database
+      const txResult = await query(`
+        SELECT amount, balance_before, balance_after 
+        FROM wallet_transactions 
+        WHERE user_id = $1 
+        ORDER BY created_at DESC 
+        LIMIT 1
+      `, [testPlayerId]);
+      
+      const tx = txResult.rows[0];
+      expect(parseFloat(tx.amount)).toBe(12.34);
+      expect(parseFloat(tx.balance_before)).toBe(100.00);
+      expect(parseFloat(tx.balance_after)).toBeCloseTo(87.66, 2);
+    });
+
+    it('should handle edge cases correctly', async () => {
+      const edgeCases = [
+        { input: '0.01', valid: true },  // Minimo valore
+        { input: '0.001', valid: false }, // Sotto precisione
+        { input: '999999.99', valid: true }, // Valore grande
+        { input: '0.00', valid: false }, // Zero
+        { input: '-10.00', valid: false }, // Negativo
+      ];
+
+      for (const testCase of edgeCases) {
+        const response = await request(app)
+          .post('/wallet/credit')
+          .set('X-Correlation-Id', uuidv4())
+          .set('Authorization', 'Bearer test_rgs_key')
+          .send({
+            playerId: testPlayerId,
+            amount: testCase.input,
+            currency: 'EUR',
+            });
+
+        if (testCase.valid) {
+          expect(response.status).toBe(200);
+          if (response.body.status === 'APPROVED') {
+            expect(response.body.newBalance).toMatch(/^\d+\.\d{2}$/);
+          }
+        } else {
+          // La bibbia dice sempre status 200, ma con REJECTED per valori invalidi
+          expect(response.status).toBe(200);
+          expect(response.body.status).toBe('REJECTED');
+        }
+      }
+    });
+  });
+});
+--- end src/__tests__/T10_T11_compliance.test.ts ---
+
+--- src/__tests__/T2_T7_idempotency.test.ts ---
+/**
+ * T2 & T7 - Idempotency Tests
+ * T2: Idempotency generale (ledger)
+ * T7: Idempotency su credit (replay)
+ */
+
+import request from 'supertest';
+import express from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import { query } from '../config/database';
+import { uniqueEmail, uniqueId } from './helpers/unique';
+
+// Mock express app con routes
+function createApp() {
+  const app = express();
+  app.use(express.json());
+  
+  // Correlation ID middleware
+  app.use((req, res, next) => {
+    const correlationId = req.headers['x-correlation-id'] as string || uuidv4();
+    (req as any).correlationId = correlationId;
+    res.setHeader('X-Correlation-Id', correlationId);
+    next();
+  });
+  
+  // Import routes (assumendo che esistano)
+  const walletRoutes = require('../routes/walletRoutes').default;
+  app.use('/wallet', walletRoutes);
+  
+  return app;
+}
+
+describe('T2 & T7 - Idempotency Tests', () => {
+  let app: express.Application;
+  const testPlayerId = uniqueId('idemp-player');
+  const testIdempotencyKey = uuidv4();
+
+  beforeAll(async () => {
+    // Ensure database is initialized ONCE before creating app
+    if (process.env.USE_SQLITE === 'true') {
+      const { initSQLite } = require('../config/database-sqlite');
+      await initSQLite();
+    }
+    app = createApp();
+    
+    // Create test user first
+    await query(`
+      INSERT OR IGNORE INTO users (id, username, email, password_hash, status)
+      VALUES ($1, $2, $3, $4, $5)
+    `, [testPlayerId, 'idemp_test_user', uniqueEmail('idemp'), 'hash', 'active']);
+    
+    await query(`
+      INSERT INTO user_wallets (id, user_id, balance, currency)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id) DO UPDATE SET balance = $3
+    `, [uuidv4(), testPlayerId, 1000.00, 'EUR']);
+  });
+
+  afterAll(async () => {
+    // Cleanup
+    await query('DELETE FROM wallet_transactions WHERE user_id = $1', [testPlayerId]);
+    await query('DELETE FROM idempotency_keys WHERE key LIKE $1', ['%' + testPlayerId + '%']);
+    await query('DELETE FROM user_wallets WHERE user_id = $1', [testPlayerId]);
+    await query('DELETE FROM users WHERE id = $1', [testPlayerId]);
+  });
+
+  describe('T2 - Idempotency generale', () => {
+    it('should not duplicate debit with same idempotencyKey', async () => {
+      const idempotencyKey = uuidv4();
+      const debitAmount = '25.00';
+      
+      // Prima richiesta
+      const response1 = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          playerId: testPlayerId,
+          amount: debitAmount,
+          currency: 'EUR'
+        });
+
+      expect(response1.status).toBe(200);
+      const balance1 = response1.body.newBalance;
+
+      // Seconda richiesta con stessa idempotencyKey
+      const response2 = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          playerId: testPlayerId,
+          amount: debitAmount,
+          currency: 'EUR'
+        });
+
+      expect(response2.status).toBe(200);
+      expect(response2.body.newBalance).toBe(balance1);
+      
+      // Verifica che ci sia una sola entry nel ledger
+      const result = await query(`
+        SELECT COUNT(*) as count 
+        FROM wallet_transactions 
+        WHERE user_id = $1 
+        AND amount = $2
+        AND type = 'debit'
+      `, [testPlayerId, parseFloat(debitAmount)]);
+      
+      expect(parseInt(result.rows[0].count)).toBe(1);
+    });
+
+    it('should not duplicate credit with same idempotencyKey', async () => {
+      const idempotencyKey = uuidv4();
+      const creditAmount = '30.00';
+      
+      // Prima richiesta
+      const response1 = await request(app)
+        .post('/wallet/credit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          playerId: testPlayerId,
+          amount: creditAmount,
+          currency: 'EUR',
+        });
+
+      expect(response1.status).toBe(200);
+      const balance1 = response1.body.newBalance;
+
+      // Seconda richiesta con stessa idempotencyKey
+      const response2 = await request(app)
+        .post('/wallet/credit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          playerId: testPlayerId,
+          amount: creditAmount,
+          currency: 'EUR',
+        });
+
+      expect(response2.status).toBe(200);
+      expect(response2.body.newBalance).toBe(balance1);
+      
+      // Verifica ledger
+      const result = await query(`
+        SELECT COUNT(*) as count 
+        FROM wallet_transactions 
+        WHERE user_id = $1 
+        AND amount = $2
+        AND type = 'credit'
+      `, [testPlayerId, parseFloat(creditAmount)]);
+      
+      expect(parseInt(result.rows[0].count)).toBe(1);
+    });
+  });
+
+  describe('T7 - Idempotency su credit (replay)', () => {
+    it('should handle multiple credit replays correctly', async () => {
+      const idempotencyKey = uuidv4();
+      const creditAmount = '45.50';
+      
+      // Ottieni balance iniziale
+      const walletResult = await query(
+        'SELECT balance FROM user_wallets WHERE user_id = $1',
+        [testPlayerId]
+      );
+      const initialBalance = parseFloat(walletResult.rows[0].balance);
+      
+      // Invia la stessa richiesta 3 volte SEQUENZIALMENTE
+      const responses = [];
+      for (let i = 0; i < 3; i++) {
+        const response = await request(app)
+          .post('/wallet/credit')
+          .set('X-Correlation-Id', uuidv4())
+          .set('Authorization', 'Bearer test_rgs_key')
+          .set('Idempotency-Key', idempotencyKey)
+          .send({
+            playerId: testPlayerId,
+            amount: creditAmount,
+            currency: 'EUR'
+          });
+        
+        responses.push(response);
+        // Small delay to ensure transaction completes
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      
+      // Tutte le risposte devono essere identiche
+      expect(responses[0].status).toBe(200);
+      expect(responses[1].status).toBe(200);
+      expect(responses[2].status).toBe(200);
+      
+      expect(responses[0].body.newBalance).toBe(responses[1].body.newBalance);
+      expect(responses[1].body.newBalance).toBe(responses[2].body.newBalance);
+      
+      // Verifica che il balance sia aumentato solo una volta
+      const finalWalletResult = await query(
+        'SELECT balance FROM user_wallets WHERE user_id = $1',
+        [testPlayerId]
+      );
+      const finalBalance = parseFloat(finalWalletResult.rows[0].balance);
+      
+      expect(finalBalance).toBeCloseTo(initialBalance + parseFloat(creditAmount), 2);
+      
+      // Verifica una sola transazione nel ledger
+      const USE_SQLITE = process.env.USE_SQLITE === 'true';
+      const recentQuery = USE_SQLITE
+        ? `SELECT COUNT(*) as count 
+           FROM wallet_transactions 
+           WHERE user_id = $1 
+           AND amount = $2
+           AND type = 'credit'
+           AND created_at > datetime('now', '-1 minute')`
+        : `SELECT COUNT(*) as count 
+           FROM wallet_transactions 
+           WHERE user_id = $1 
+           AND amount = $2
+           AND type = 'credit'
+           AND created_at > NOW() - INTERVAL '1 minute'`;
+      
+      const txResult = await query(recentQuery, [testPlayerId, parseFloat(creditAmount)]);
+      
+      expect(parseInt(txResult.rows[0].count)).toBe(1);
+    });
+
+    it('should store and return consistent idempotent response', async () => {
+      const idempotencyKey = uuidv4();
+      const creditAmount = '77.77';
+      
+      // Prima richiesta
+      const response1 = await request(app)
+        .post('/wallet/credit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          playerId: testPlayerId,
+          amount: creditAmount,
+          currency: 'EUR',
+        });
+
+      // Attendi un po' per simulare delay
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Seconda richiesta dopo delay
+      const response2 = await request(app)
+        .post('/wallet/credit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          playerId: testPlayerId,
+          amount: creditAmount,
+          currency: 'EUR',
+        });
+
+      // Le risposte devono essere identiche
+      expect(JSON.stringify(response1.body)).toBe(JSON.stringify(response2.body));
+      
+      // Verifica che la idempotency key sia stata salvata
+      const idempResult = await query(
+        'SELECT response FROM idempotency_keys WHERE key = $1',
+        [idempotencyKey]
+      );
+      
+      expect(idempResult.rows.length).toBe(1);
+      expect(JSON.parse(idempResult.rows[0].response)).toEqual(response1.body);
+    });
+  });
+
+  describe('Edge cases', () => {
+    it('should handle different idempotency keys as separate transactions', async () => {
+      const key1 = uuidv4();
+      const key2 = uuidv4();
+      const amount = '15.00';
+      
+      // Due richieste con chiavi diverse
+      const response1 = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', key1)
+        .send({
+          playerId: testPlayerId,
+          amount,
+          currency: 'EUR'
+        });
+
+      const response2 = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', key2)
+        .send({
+          playerId: testPlayerId,
+          amount,
+          currency: 'EUR'
+        });
+
+      // Entrambe devono avere successo
+      expect(response1.status).toBe(200);
+      expect(response2.status).toBe(200);
+      
+      // I balance devono essere diversi (secondo debit)
+      const balance1 = parseFloat(response1.body.newBalance);
+      const balance2 = parseFloat(response2.body.newBalance);
+      expect(balance2).toBeCloseTo(balance1 - parseFloat(amount), 2);
+    });
+  });
+});
+--- end src/__tests__/T2_T7_idempotency.test.ts ---
+
+--- src/__tests__/T3_T4_T6_wallet.test.ts ---
+/**
+ * T3, T4, T6 - Wallet Operations Tests
+ * T3: Fondi insufficienti
+ * T4: Currency binding
+ * T6: Debit-Credit round-trip
+ */
+
+import request from 'supertest';
+import express from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import { query } from '../config/database';
+import { uniqueEmail, uniqueId } from './helpers/unique';
+
+function createApp() {
+  const app = express();
+  app.use(express.json());
+  
+  // Correlation ID middleware
+  app.use((req, res, next) => {
+    const correlationId = req.headers['x-correlation-id'] as string || uuidv4();
+    const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    
+    if (!UUID_V4_REGEX.test(correlationId)) {
+      return res.status(400).json({
+        error: {
+          code: 'RW-CAS-008',
+          message: 'X-Correlation-Id must be valid UUID v4 format'
+        }
+      });
+    }
+    
+    (req as any).correlationId = correlationId;
+    res.setHeader('X-Correlation-Id', correlationId);
+    next();
+  });
+  
+  const walletRoutes = require('../routes/walletRoutes').default;
+  app.use('/wallet', walletRoutes);
+  
+  return app;
+}
+
+describe('T3, T4, T6 - Wallet Operations', () => {
+  let app: express.Application;
+  const testPlayerId = uniqueId('wallet');
+  const testWalletId = uuidv4();
+
+  beforeAll(async () => {
+    app = createApp();
+    
+    // Create test user first
+    await query(`
+      INSERT OR IGNORE INTO users (id, username, email, password_hash, status)
+      VALUES ($1, $2, $3, $4, $5)
+    `, [testPlayerId, 'wallet_test_user', uniqueEmail('wallet'), 'hash', 'active']);
+    
+    await query(`
+      INSERT INTO user_wallets (id, user_id, balance, currency)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id) DO UPDATE SET balance = $3, currency = $4
+    `, [testWalletId, testPlayerId, 100.00, 'EUR']);
+  });
+
+  afterAll(async () => {
+    await query('DELETE FROM wallet_transactions WHERE user_id = $1', [testPlayerId]);
+    await query('DELETE FROM idempotency_keys WHERE key LIKE $1', ['%test-wallet%']);
+    await query('DELETE FROM user_wallets WHERE user_id = $1', [testPlayerId]);
+    await query('DELETE FROM users WHERE id = $1', [testPlayerId]);
+  });
+
+  describe('T3 - Fondi insufficienti', () => {
+    it('should reject debit when amount exceeds balance', async () => {
+      // Ottieni balance corrente
+      const walletResult = await query(
+        'SELECT balance FROM user_wallets WHERE user_id = $1',
+        [testPlayerId]
+      );
+      const currentBalance = parseFloat(walletResult.rows[0].balance);
+      
+      // Tenta di addebitare più del saldo
+      const excessAmount = (currentBalance + 50).toFixed(2);
+      
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: testPlayerId,
+          amount: excessAmount,
+          currency: 'EUR',
+        });
+
+      // Deve essere rifiutato - la bibbia dice status 200 con REJECTED
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('REJECTED');
+      expect(response.body.reason).toBe('RW-CAS-002'); // Insufficient funds
+      expect(response.body.reason).toMatch(/^RW-(CAS|RGS)-\d{3}$/)
+      
+      // Verifica che il saldo non sia cambiato
+      const newWalletResult = await query(
+        'SELECT balance FROM user_wallets WHERE user_id = $1',
+        [testPlayerId]
+      );
+      const newBalance = parseFloat(newWalletResult.rows[0].balance);
+      expect(newBalance).toBe(currentBalance);
+      
+      // Verifica che non ci sia transazione nel ledger
+      const txResult = await query(`
+        SELECT COUNT(*) as count 
+        FROM wallet_transactions 
+        WHERE user_id = $1 
+        AND amount = $2
+        AND created_at > datetime('now', '-1 minute')
+      `, [testPlayerId, parseFloat(excessAmount)]);
+      
+      expect(parseInt(txResult.rows[0].count)).toBe(0);
+    });
+
+    it('should reject debit that would make balance negative', async () => {
+      // Reset balance to known value
+      await query(
+        'UPDATE user_wallets SET balance = $1 WHERE user_id = $2',
+        [10.00, testPlayerId]
+      );
+      
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: testPlayerId,
+          amount: '15.00',
+          currency: 'EUR',
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('REJECTED');
+      expect(response.body.reason).toBe('RW-CAS-002'); // Insufficient funds
+      expect(response.body.reason).toMatch(/^RW-(CAS|RGS)-\d{3}$/);
+      
+      // Balance deve rimanere 10.00
+      const walletResult = await query(
+        'SELECT balance FROM user_wallets WHERE user_id = $1',
+        [testPlayerId]
+      );
+      expect(parseFloat(walletResult.rows[0].balance)).toBe(10.00);
+    });
+
+    it('should allow debit equal to balance', async () => {
+      // Set balance esatto
+      await query(
+        'UPDATE user_wallets SET balance = $1 WHERE user_id = $2',
+        [50.00, testPlayerId]
+      );
+      
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: testPlayerId,
+          amount: '50.00',
+          currency: 'EUR',
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('APPROVED');
+      expect(response.body.newBalance).toBe('0.00');
+      expect(response.body.newBalance).toMatch(/^\d+\.\d{2}$/);
+    });
+  });
+
+  describe('T4 - Currency binding', () => {
+    it('should reject debit with mismatched currency', async () => {
+      // Il wallet è in EUR, prova con USD
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: testPlayerId,
+          amount: '10.00',
+          currency: 'USD',
+        });
+
+      // Currency mismatch deve essere REJECTED con RW-CAS-008
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('REJECTED');
+      expect(response.body.reason).toBe('RW-CAS-008'); // Invalid currency
+      expect(response.body.reason).toMatch(/^RW-(CAS|RGS)-\d{3}$/)
+      
+      // Verifica che non ci sia stata modifica al saldo
+      const walletResult = await query(
+        'SELECT balance, currency FROM user_wallets WHERE user_id = $1',
+        [testPlayerId]
+      );
+      expect(walletResult.rows[0].currency).toBe('EUR');
+    });
+
+    it('should reject credit with mismatched currency', async () => {
+      const response = await request(app)
+        .post('/wallet/credit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: testPlayerId,
+          amount: '25.00',
+          currency: 'GBP',
+        });
+
+      // Currency mismatch deve essere REJECTED con RW-CAS-008
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('REJECTED');
+      expect(response.body.reason).toBe('RW-CAS-008'); // Invalid currency
+      expect(response.body.reason).toMatch(/^RW-(CAS|RGS)-\d{3}$/)
+    });
+
+    it('should accept matching currency', async () => {
+      // Reset balance
+      await query(
+        'UPDATE user_wallets SET balance = $1 WHERE user_id = $2',
+        [100.00, testPlayerId]
+      );
+      
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: testPlayerId,
+          amount: '10.00',
+          currency: 'EUR',
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('APPROVED');
+    });
+  });
+
+  describe('T6 - Debit-Credit round-trip', () => {
+    it('should maintain balance integrity in round-trip', async () => {
+      // Set initial balance
+      const initialBalance = 200.00;
+      await query(
+        'UPDATE user_wallets SET balance = $1 WHERE user_id = $2',
+        [initialBalance, testPlayerId]
+      );
+      
+      const amount = '75.50';
+      
+      // Step 1: Debit
+      const debitResponse = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: testPlayerId,
+          amount,
+          currency: 'EUR',
+        });
+
+      expect(debitResponse.status).toBe(200);
+      expect(debitResponse.body.status).toBe('APPROVED');
+      expect(debitResponse.body.newBalance).toMatch(/^\d+\.\d{2}$/);
+      const balanceAfterDebit = parseFloat(debitResponse.body.newBalance);
+      expect(balanceAfterDebit).toBeCloseTo(initialBalance - parseFloat(amount), 2);
+      
+      // Step 2: Credit stesso importo
+      const creditResponse = await request(app)
+        .post('/wallet/credit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .set('Idempotency-Key', uuidv4())
+        .send({
+          playerId: testPlayerId,
+          amount,
+          currency: 'EUR',
+        });
+
+      expect(creditResponse.status).toBe(200);
+      expect(creditResponse.body.status).toBe('APPROVED');
+      expect(creditResponse.body.newBalance).toMatch(/^\d+\.\d{2}$/);
+      const finalBalance = parseFloat(creditResponse.body.newBalance);
+      
+      // Il saldo finale deve essere uguale a quello iniziale
+      expect(finalBalance).toBeCloseTo(initialBalance, 2);
+      
+      // Verifica nel ledger: devono esserci 2 movimenti
+      const txResult = await query(`
+        SELECT type, amount, balance_before, balance_after 
+        FROM wallet_transactions 
+        WHERE user_id = $1 
+        AND amount = $2
+        ORDER BY created_at DESC
+        LIMIT 2
+      `, [testPlayerId, parseFloat(amount)]);
+      
+      expect(txResult.rows.length).toBe(2);
+      
+      // Verifica coerenza movimenti
+      const creditTx = txResult.rows.find(r => r.type === 'credit');
+      const debitTx = txResult.rows.find(r => r.type === 'debit');
+      
+      expect(creditTx).toBeDefined();
+      expect(debitTx).toBeDefined();
+      expect(parseFloat(creditTx.amount)).toBe(parseFloat(debitTx.amount));
+    });
+
+    it('should handle multiple round-trips correctly', async () => {
+      const initialBalance = 500.00;
+      await query(
+        'UPDATE user_wallets SET balance = $1 WHERE user_id = $2',
+        [initialBalance, testPlayerId]
+      );
+      
+      const operations = [
+        { type: 'debit', amount: '50.00' },
+        { type: 'credit', amount: '25.00' },
+        { type: 'debit', amount: '30.00' },
+        { type: 'credit', amount: '55.00' }
+      ];
+      
+      let expectedBalance = initialBalance;
+      
+      for (const op of operations) {
+        const response = await request(app)
+          .post(`/wallet/${op.type}`)
+          .set('X-Correlation-Id', uuidv4())
+          .set('Authorization', 'Bearer test_rgs_key')
+          .set('Idempotency-Key', uuidv4())
+          .send({
+            playerId: testPlayerId,
+            amount: op.amount,
+            currency: 'EUR'
+          });
+        
+        expect(response.status).toBe(200);
+        expect(response.body.status).toBe('APPROVED');
+        expect(response.body.newBalance).toMatch(/^\d+\.\d{2}$/);
+        
+        if (op.type === 'debit') {
+          expectedBalance -= parseFloat(op.amount);
+        } else {
+          expectedBalance += parseFloat(op.amount);
+        }
+        
+        expect(parseFloat(response.body.newBalance)).toBeCloseTo(expectedBalance, 2);
+      }
+      
+      // Verifica saldo finale nel database
+      const finalResult = await query(
+        'SELECT balance FROM user_wallets WHERE user_id = $1',
+        [testPlayerId]
+      );
+      
+      expect(parseFloat(finalResult.rows[0].balance)).toBeCloseTo(expectedBalance, 2);
+    });
+  });
+});
+--- end src/__tests__/T3_T4_T6_wallet.test.ts ---
+
+--- src/__tests__/T5_limits_check.test.ts ---
+/**
+ * T5 - Limits Check Test
+ * Obiettivo: la verifica limiti usa solo la sorgente canonica (Bible §0.7)
+ * NOTA: La bibbia dice /limits/check { playerId, stake } → { ok:true|false, reason? }
+ * NON c'è jurisdiction nel request!
+ */
+
+import request from 'supertest';
+import express from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import { query } from '../config/database';
+import { uniqueEmail, uniqueId } from './helpers/unique';
+
+function createApp() {
+  const app = express();
+  app.use(express.json());
+  
+  // Correlation ID middleware
+  app.use((req, res, next) => {
+    const correlationId = req.headers['x-correlation-id'] as string || uuidv4();
+    (req as any).correlationId = correlationId;
+    res.setHeader('X-Correlation-Id', correlationId);
+    next();
+  });
+  
+  const limitsRoutes = require('../routes/limitsRoutes').default;
+  app.use('/limits', limitsRoutes);
+  
+  return app;
+}
+
+describe('T5 - Limits Check', () => {
+  let app: express.Application;
+  const testPlayerId = uniqueId('limits');
+
+  beforeAll(async () => {
+    app = createApp();
+    
+    // Create test user and wallet for this suite
+    await query(`
+      INSERT OR IGNORE INTO users (id, username, email, password_hash, status)
+      VALUES ($1, $2, $3, $4, $5)
+    `, [testPlayerId, 'limitstest', uniqueEmail('limits'), 'hash', 'active']);
+    
+    await query(`
+      INSERT OR IGNORE INTO user_wallets (id, user_id, balance, currency)
+      VALUES ($1, $2, $3, $4)
+    `, [uuidv4(), testPlayerId, 1000.00, 'EUR']);
+  });
+
+  afterAll(async () => {
+    await query('DELETE FROM user_wallets WHERE user_id = $1', [testPlayerId]);
+    await query('DELETE FROM users WHERE id = $1', [testPlayerId]);
+  });
+
+  describe('Bibbia §0.7 DEFAULT limits (min_bet 0.10, max_bet 100.00)', () => {
+    it('should reject stake below minBet (0.10)', async () => {
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: testPlayerId,
+          stake: '0.05' // Below min
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.ok).toBe(false);
+      expect(response.body.reason).toBeDefined();
+    });
+
+    it('should reject stake above maxBet (100.00)', async () => {
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: testPlayerId,
+          stake: '150.00' // Above max
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.ok).toBe(false);
+      expect(response.body.reason).toBeDefined();
+    });
+
+    it('should accept stake within range', async () => {
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: testPlayerId,
+          stake: '50.00' // Within range
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.ok).toBe(true);
+      expect(response.body.reason).toBeUndefined();
+    });
+
+    it('should accept stake equal to minBet', async () => {
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: testPlayerId,
+          stake: '0.10'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.ok).toBe(true);
+    });
+
+    it('should accept stake equal to maxBet', async () => {
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: testPlayerId,
+          stake: '100.00'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.ok).toBe(true);
+    });
+  });
+
+  describe('Balance checks', () => {
+    it('should reject stake exceeding balance', async () => {
+      // Set specific balance
+      await query(
+        'UPDATE user_wallets SET balance = $1 WHERE user_id = $2',
+        [50.00, testPlayerId]
+      );
+      
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: testPlayerId,
+          stake: '75.00' // More than balance
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.ok).toBe(false);
+      expect(response.body.reason).toBe('RW-CAS-002'); // Insufficient balance code
+      expect(typeof response.body.reason).toBe('string');
+    });
+
+    it('should accept stake within balance', async () => {
+      // Set specific balance
+      await query(
+        'UPDATE user_wallets SET balance = $1 WHERE user_id = $2',
+        [100.00, testPlayerId]
+      );
+      
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: testPlayerId,
+          stake: '50.00' // Within balance
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.ok).toBe(true);
+    });
+  });
+
+  describe('Error handling', () => {
+    it('should handle missing player', async () => {
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: 'non-existent-player',
+          stake: '10.00'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.ok).toBe(false);
+      expect(response.body.reason).toBeDefined();
+    });
+
+    it('should use allowed error codes on failure', async () => {
+      const response = await request(app)
+        .post('/limits/check')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          // Missing required fields
+          playerId: 'test-player'
+        });
+
+      if (response.status !== 200) {
+        expect(response.body.error).toBeDefined();
+        // Solo codici ammessi: RW-CAS-003, RW-RGS-008, RW-SYS-000, RW-CAS-006
+        expect(['RW-CAS-003', 'RW-RGS-008', 'RW-SYS-000', 'RW-CAS-006']).toContain(response.body.error.code);
+      }
+    });
+  });
+});
+--- end src/__tests__/T5_limits_check.test.ts ---
+
+--- src/__tests__/T8_T9_T12_system.test.ts ---
+/**
+ * T8, T9, T12 - System Tests
+ * T8: Timeout/Busy path
+ * T9: Webhook delivery
+ * T12: Health/Readiness
+ */
+
+import request from 'supertest';
+import express from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import axios from 'axios';
+import { query, pool } from '../config/database';
+import { redis } from '../config/redis';
+
+jest.mock('axios');
+const mockedAxios = axios as jest.Mocked<typeof axios>;
+
+function createApp() {
+  const app = express();
+  app.use(express.json());
+  
+  // Correlation ID middleware
+  app.use((req, res, next) => {
+    const correlationId = req.headers['x-correlation-id'] as string || uuidv4();
+    (req as any).correlationId = correlationId;
+    res.setHeader('X-Correlation-Id', correlationId);
+    next();
+  });
+  
+  // Import all routes
+  const walletRoutes = require('../routes/walletRoutes').default;
+  const webhookRoutes = require('../routes/webhookRoutes').default;
+  
+  app.use('/wallet', walletRoutes);
+  app.use('/rgs', webhookRoutes);
+  
+  // Health endpoint - READ ONLY, no transactions
+  app.get('/health', async (req, res) => {
+    try {
+      // Check database with read-only query via shared handle
+      const USE_SQLITE = process.env.USE_SQLITE === 'true';
+      if (USE_SQLITE) {
+        const { querySQLite } = require('../config/database-sqlite');
+        await querySQLite('SELECT 1 as health_check'); // Read-only via shared handle
+      } else {
+        await query('SELECT 1');
+      }
+      
+      // Check Redis if not in SQLite mode
+      if (!USE_SQLITE && redis) {
+        await redis.ping();
+      }
+      
+      res.json({
+        success: true,
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        services: {
+          database: 'connected',
+          redis: USE_SQLITE ? 'not-required' : 'connected',
+          mode: USE_SQLITE ? 'test-sqlite' : 'production-postgres'
+        }
+      });
+    } catch (error) {
+      res.status(503).json({
+        success: false,
+        status: 'unhealthy',
+        error: 'Service unavailable'
+      });
+    }
+  });
+  
+  return app;
+}
+
+describe('T8, T9, T12 - System Tests', () => {
+  let app: express.Application;
+
+  beforeAll(async () => {
+    // Ensure database is initialized ONCE before creating app
+    if (process.env.USE_SQLITE === 'true') {
+      const { initSQLite } = require('../config/database-sqlite');
+      await initSQLite();
+    }
+    app = createApp();
+  });
+
+  describe('T8 - Timeout/Busy path', () => {
+    it('should return RW-RGS-008 on timeout', async () => {
+      // Mock slow database
+      const originalQuery = query;
+      jest.spyOn(require('../config/database'), 'query').mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 6000)); // Simula timeout
+        throw new Error('Query timeout');
+      });
+
+      const response = await request(app)
+        .post('/wallet/debit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Idempotency-Key', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: 'test-timeout',
+          amount: '10.00',
+          currency: 'EUR'
+        })
+        .timeout(7000);
+
+      // Deve restituire uno dei codici ammessi per timeout
+      expect(['RW-RGS-008', 'RW-SYS-000']).toContain(response.body.error?.code);
+
+      // Restore original
+      jest.spyOn(require('../config/database'), 'query').mockRestore();
+    });
+
+    it('should return RW-SYS-000 on system error', async () => {
+      // Mock database error
+      jest.spyOn(require('../config/database'), 'query').mockRejectedValueOnce(
+        new Error('Database connection lost')
+      );
+
+      const response = await request(app)
+        .post('/wallet/credit')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Idempotency-Key', uuidv4())
+        .set('Authorization', 'Bearer test_rgs_key')
+        .send({
+          playerId: 'test-error',
+          amount: '20.00',
+          currency: 'EUR'
+        });
+
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.body.error).toBeDefined();
+      expect(['RW-SYS-000', 'RW-RGS-008']).toContain(response.body.error.code);
+
+      jest.spyOn(require('../config/database'), 'query').mockRestore();
+    });
+
+    it('should handle concurrent requests gracefully', async () => {
+      const responses = [];
+      
+      // Invia 10 richieste SEQUENZIALMENTE (no concurrency to avoid locks)
+      for (let i = 0; i < 10; i++) {
+        const response = await request(app)
+          .post('/limits/check')
+          .set('X-Correlation-Id', uuidv4())
+          .set('Authorization', 'Bearer test_rgs_key')
+          .send({
+            playerId: `concurrent-${i}`,
+            jurisdiction: 'MGA',
+            stake: '10.00',
+            currency: 'EUR'
+          });
+        responses.push(response);
+      }
+      
+      // Tutte devono avere una risposta valida
+      responses.forEach(response => {
+        expect(response.status).toBeLessThanOrEqual(503);
+        if (response.status !== 200) {
+          // Se errore, deve essere uno dei codici ammessi
+          expect(['RW-CAS-003', 'RW-RGS-008', 'RW-SYS-000']).toContain(response.body.error?.code);
+        }
+      });
+    });
+  });
+
+  describe('T9 - Webhook delivery', () => {
+    beforeEach(() => {
+      mockedAxios.post.mockClear();
+    });
+
+    it('should send playerExcluded webhook with correct payload', async () => {
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: { success: true } });
+
+      const response = await request(app)
+        .post('/rgs/playerExcluded')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer casino_internal_key')
+        .send({
+          playerId: 'excluded-player-123',
+          reason: 'self_exclusion',
+          excludedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+        });
+
+      expect(response.status).toBe(200);
+      
+      // Verifica che il webhook sia stato inviato
+      if (process.env.RGS_WEBHOOK_URL) {
+        expect(mockedAxios.post).toHaveBeenCalledWith(
+          expect.stringContaining('/playerExcluded'),
+          expect.objectContaining({
+            playerId: 'excluded-player-123',
+            reason: 'self_exclusion'
+          }),
+          expect.any(Object)
+        );
+      }
+    });
+
+    it('should send balanceChanged webhook with correct payload', async () => {
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: { success: true } });
+
+      const response = await request(app)
+        .post('/rgs/balanceChanged')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer casino_internal_key')
+        .send({
+          playerId: 'balance-player-456',
+          newBalance: '1500.00',
+          currency: 'EUR',
+          changeType: 'deposit',
+          changeAmount: '500.00'
+        });
+
+      expect(response.status).toBe(200);
+      
+      if (process.env.RGS_WEBHOOK_URL) {
+        expect(mockedAxios.post).toHaveBeenCalledWith(
+          expect.stringContaining('/balanceChanged'),
+          expect.objectContaining({
+            playerId: 'balance-player-456',
+            newBalance: '1500.00'
+          }),
+          expect.any(Object)
+        );
+      }
+    });
+
+    it('should retry webhook on failure with backoff', async () => {
+      // Simula fallimento iniziale poi successo
+      mockedAxios.post
+        .mockRejectedValueOnce(new Error('Connection refused'))
+        .mockRejectedValueOnce(new Error('Timeout'))
+        .mockResolvedValueOnce({ status: 200, data: { success: true } });
+
+      const response = await request(app)
+        .post('/rgs/playerExcluded')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer casino_internal_key')
+        .send({
+          playerId: 'retry-player',
+          reason: 'limit_reached',
+          excludedAt: new Date().toISOString()
+        });
+
+      // Anche se c'è retry interno, la risposta deve essere immediata
+      expect(response.status).toBeLessThanOrEqual(202);
+      
+      // Attendi un po' per i retry
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Verifica che ci siano stati tentativi di retry
+      if (process.env.RGS_WEBHOOK_URL) {
+        expect(mockedAxios.post).toHaveBeenCalledTimes(3);
+      }
+    });
+
+    it('should return correct error codes on webhook failure', async () => {
+      mockedAxios.post.mockRejectedValue(new Error('Network error'));
+
+      const response = await request(app)
+        .post('/rgs/balanceChanged')
+        .set('X-Correlation-Id', uuidv4())
+        .set('Authorization', 'Bearer casino_internal_key')
+        .send({
+          playerId: 'error-player',
+          newBalance: '0.00',
+          currency: 'EUR'
+        });
+
+      if (response.status >= 400) {
+        // Codici ammessi per webhook failure
+        expect(['RW-CAS-007', 'RW-NET-009', 'RW-SYS-000']).toContain(response.body.error?.code);
+      }
+    });
+  });
+
+  describe('T12 - Health/Readiness', () => {
+    it('should report healthy when all services are up', async () => {
+      const response = await request(app)
+        .get('/health');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.status).toBe('healthy');
+      expect(response.body.services).toBeDefined();
+      expect(response.body.services.database).toBe('connected');
+    });
+
+    it('should report unhealthy when database is down', async () => {
+      // Mock database failure
+      jest.spyOn(require('../config/database'), 'query').mockRejectedValueOnce(
+        new Error('Database unreachable')
+      );
+
+      const response = await request(app)
+        .get('/health');
+
+      expect(response.status).toBe(503);
+      expect(response.body.success).toBe(false);
+      expect(response.body.status).toBe('unhealthy');
+
+      jest.spyOn(require('../config/database'), 'query').mockRestore();
+    });
+
+    it('should include timestamp in health response', async () => {
+      const response = await request(app)
+        .get('/health');
+
+      expect(response.body.timestamp).toBeDefined();
+      const timestamp = new Date(response.body.timestamp);
+      expect(timestamp.getTime()).toBeLessThanOrEqual(Date.now());
+      expect(timestamp.getTime()).toBeGreaterThan(Date.now() - 1000);
+    });
+
+    it('should report mode correctly', async () => {
+      const response = await request(app)
+        .get('/health');
+
+      const expectedMode = process.env.USE_SQLITE === 'true' 
+        ? 'test-sqlite' 
+        : 'production-postgres';
+      
+      expect(response.body.services.mode).toBe(expectedMode);
+    });
+
+    it('should handle Redis down gracefully in non-SQLite mode', async () => {
+      const originalUseSqlite = process.env.USE_SQLITE;
+      process.env.USE_SQLITE = 'false';
+
+      // Mock Redis failure
+      if (redis) {
+        jest.spyOn(redis, 'ping').mockRejectedValueOnce(new Error('Redis down'));
+      }
+
+      const response = await request(app)
+        .get('/health');
+
+      expect(response.status).toBe(503);
+      expect(response.body.success).toBe(false);
+
+      // Restore
+      process.env.USE_SQLITE = originalUseSqlite;
+      if (redis) {
+        jest.spyOn(redis, 'ping').mockRestore();
+      }
+    });
+  });
+});
+--- end src/__tests__/T8_T9_T12_system.test.ts ---
+

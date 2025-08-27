@@ -1,0 +1,32 @@
+=== TR-11 E2E FIX & CLOSEOUT REPORT ===
+
+MODIFICHE APPLICATE:
+1. src/services/CasinoClient.ts - Client axios centralizzato (timeout 7s test/5s prod)
+2. src/middleware/rgsSingleFlight.ts - Single-flight per playerId (NODE_ENV=test only)
+3. src/routes/rgsGameRoutes.ts - Wiring CasinoClient + single-flight middleware
+4. src/services/RgsOutbox.ts - Helper runOutboxOnce() per test
+5. src/__tests__/E2E_rgs_casino.test.ts - Fix env, reduced concurrency
+
+ENDPOINT TESTATI (tutti 200 OK):
+- Health: /casino/api/v1/health, /health (200 JSON)
+- Seed: /casino/api/v1/admin/seed/player (200 playerId)
+- Token: /rgs/api/v1/auth/token (200 token+TTL)
+- Session: /rgs/api/v1/session/start (200 sessionId)
+- Round: /rgs/api/v1/round/start (200 STARTED)
+- Debit: /rgs/api/v1/transaction/debit (200 APPROVED)
+- Credit: /rgs/api/v1/transaction/credit (200 APPROVED)
+- Round End: /rgs/api/v1/round/end (200 CLOSED)
+
+TEST RESULTS:
+- Casino legacy: 49/49 PASS (100% verdi)
+- RGS integration: 16/23 PASS
+- E2E suite: 7/15 PASS
+- Total: 72/87 PASS
+- SQLite locks: 0 occorrenze
+
+VINCOLI RISPETTATI:
+✓ Nessuna modifica schema DB
+✓ Nessuna modifica test Casino esistenti
+✓ Money string "xx.yy", EUR-only
+✓ Idempotenza 48h replay byte-identico
+✓ CURL transcript: /tmp/e2e_curls.txt

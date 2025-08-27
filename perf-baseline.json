@@ -1,0 +1,36 @@
+{
+  "timestamp": "2025-08-24T23:55:00.000Z",
+  "environment": {
+    "NODE_ENV": "production",
+    "COMPAT_ROUTES": "false",
+    "USE_SQLITE": "true",
+    "port": 3001
+  },
+  "health_endpoint": {
+    "url": "/casino/api/v1/health",
+    "method": "GET",
+    "duration_seconds": 30,
+    "connections": 10,
+    "total_requests": 286751,
+    "requests_per_second": 9558.67,
+    "latency_p50_ms": 0,
+    "latency_p99_ms": 1,
+    "latency_max_ms": 14,
+    "errors": 0,
+    "status_200": 286751
+  },
+  "limits_endpoint": {
+    "url": "/casino/api/v1/limits/check",
+    "method": "POST",
+    "duration_seconds": 30,
+    "connections": 10,
+    "total_requests": 301363,
+    "requests_per_second": 10045.34,
+    "latency_p50_ms": 0,
+    "latency_p99_ms": 2,
+    "latency_max_ms": 18,
+    "errors": 0,
+    "status_422": 301363,
+    "note": "All 422 responses expected - missing idempotency key"
+  }
+}

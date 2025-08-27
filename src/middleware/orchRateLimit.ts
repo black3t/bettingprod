@@ -1,0 +1,57 @@
+import crypto from 'crypto';
+import type { Request, Response, NextFunction } from 'express';
+import { logger } from '../utils/logger';
+import { buildError } from '../registry/rw';
+
+type Bucket = { hits: number[] };
+const buckets = new Map<string, Bucket>();
+
+function keyFrom(req: Request): string {
+  // Prefer playerId from body; else route+ip. Do not log raw value.
+  const pid = (req.body && (req.body.playerId || req.body.playerID)) as string | undefined;
+  const basis = pid || `${req.ip}|${req.originalUrl}`;
+  return crypto.createHash('sha256').update(basis).digest('hex');
+}
+
+export function orchRateLimit(opts?: { limit?: number; windowMs?: number; allowlist?: RegExp[] }) {
+  const limit = Number(process.env.ORCH_RATE_LIMIT ?? opts?.limit ?? 5);
+  const windowMs = Number(process.env.ORCH_RATE_WINDOW_MS ?? opts?.windowMs ?? 10000);
+  const allowlist = opts?.allowlist ?? [/^\/orch\/api\/v1\/health$/, /^\/orch\/api\/v1\/metrics$/];
+
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (process.env.NODE_ENV === 'production') return next(); // OFF in prod
+    if (allowlist.some(r => r.test(req.originalUrl))) return next();
+
+    const now = Date.now();
+    const k = keyFrom(req);
+    const b = buckets.get(k) ?? { hits: [] };
+    // prune outside window
+    b.hits = b.hits.filter(ts => ts > (now - windowMs));
+    if (b.hits.length >= limit) {
+      const resetMs = (b.hits[0] + windowMs) - now;
+      const resetSec = Math.max(1, Math.ceil(resetMs / 1000));
+      res.setHeader('Retry-After', String(resetSec));
+      res.setHeader('X-RateLimit-Limit', String(limit));
+      res.setHeader('X-RateLimit-Remaining', '0');
+      res.setHeader('X-RateLimit-Reset', String(Math.ceil((now + resetMs) / 1000)));
+
+      logger.info('orch.rate.limit.hit', { action:'orch.rate.limit.hit', hashedKey:k, route:req.originalUrl, method:req.method, limit, windowMs });
+
+      const { status, body } = buildError('RW-SYS-000', {
+        message: 'Too Many Requests',
+        correlationId: (req as any).correlationId,
+        httpOverride: 429
+      });
+      return res.status(status).json(body);
+    }
+    // allow & record
+    b.hits.push(now);
+    buckets.set(k, b);
+
+    res.setHeader('X-RateLimit-Limit', String(limit));
+    res.setHeader('X-RateLimit-Remaining', String(Math.max(0, limit - b.hits.length)));
+    res.setHeader('X-RateLimit-Reset', String(Math.ceil((now + windowMs) / 1000)));
+
+    next();
+  };
+}

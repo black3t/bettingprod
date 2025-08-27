@@ -1,0 +1,795 @@
+openapi: 3.0.0
+info:
+  title: RGS⇄Casino Interface API
+  version: 1.0.0
+  description: Complete RGS and Casino communication interface (21 endpoints)
+servers:
+  - url: http://localhost:3001/casino/api/v1
+    description: Casino API
+  - url: http://localhost:3001/rgs/api/v1
+    description: RGS API
+paths:
+  /wallet/debit:
+    post:
+      summary: Debit player wallet
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, amount, currency]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                amount:
+                  type: string
+                  pattern: '^\d+\.\d{2}$'
+                currency:
+                  type: string
+                  enum: [EUR]
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /wallet/credit:
+    post:
+      summary: Credit player wallet
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/WalletOperation'
+      responses:
+        '200':
+          $ref: '#/components/responses/WalletSuccess'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /wallet/cancel:
+    post:
+      summary: Cancel wallet transaction
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, transactionId, amount]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                transactionId:
+                  type: string
+                  format: uuid
+                amount:
+                  type: string
+                  pattern: '^\d+\.\d{2}$'
+                reason:
+                  type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/WalletSuccess'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /limits/check:
+    post:
+      summary: Check player limits
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, stake]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                stake:
+                  type: string
+                  pattern: '^\d+\.\d{2}$'
+      responses:
+        '200':
+          description: Limit check result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+
+  /player/status:
+    get:
+      summary: Get player status (canonical)
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: playerId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Player status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlayerStatus'
+    post:
+      summary: Get player status (deprecated)
+      deprecated: true
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Player status
+          headers:
+            Deprecation:
+              schema:
+                type: string
+                enum: ['true']
+            Sunset:
+              schema:
+                type: string
+                format: date-time
+            Link:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlayerStatus'
+
+  /kyc/status:
+    get:
+      summary: Get KYC status (canonical)
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: playerId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: KYC status
+    post:
+      summary: Get KYC status (deprecated)
+      deprecated: true
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: KYC status with deprecation headers
+
+  /kyc/exclusions:
+    get:
+      summary: Get exclusions (canonical)
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: playerId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Exclusions list
+    post:
+      summary: Get exclusions (deprecated)
+      deprecated: true
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Exclusions with deprecation headers
+
+  /rg/self-exclude:
+    post:
+      summary: Set self-exclusion
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, until]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                until:
+                  type: string
+                  format: date-time
+      responses:
+        '200':
+          description: Self-exclusion activated
+
+  /rg/cooling-off:
+    post:
+      summary: Set cooling-off period
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        $ref: '#/components/requestBodies/RGPeriod'
+      responses:
+        '200':
+          description: Cooling-off activated
+
+  /rg/reality-check/ack:
+    post:
+      summary: Acknowledge reality check
+      tags: [Casino]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Acknowledged
+
+  /rgs/playerExcluded:
+    post:
+      summary: Notify player excluded
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        $ref: '#/components/requestBodies/WebhookNotification'
+      responses:
+        '200':
+          description: Accepted
+        '202':
+          description: Queued for retry
+
+  /rgs/limitsReached:
+    post:
+      summary: Notify limits reached
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, reason, ts]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                reason:
+                  type: string
+                ts:
+                  type: string
+                  format: date-time
+      responses:
+        '200':
+          description: Accepted
+        '202':
+          description: Queued for retry
+
+  /rgs/balanceChanged:
+    post:
+      summary: Notify balance changed
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, newBalance, ts]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                newBalance:
+                  type: string
+                  pattern: '^\d+\.\d{2}$'
+                ts:
+                  type: string
+                  format: date-time
+      responses:
+        '200':
+          description: Accepted
+        '202':
+          description: Queued for retry
+
+  /rgs/kycUpdated:
+    post:
+      summary: Notify KYC updated
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, kycStatus, ts]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                kycStatus:
+                  type: string
+                ts:
+                  type: string
+                  format: date-time
+      responses:
+        '200':
+          description: Accepted
+        '202':
+          description: Queued for retry
+
+  /session/validate:
+    post:
+      summary: Validate session
+      tags: [RGS]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, playerId]
+              properties:
+                sessionId:
+                  type: string
+                playerId:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Session valid
+
+  /session/keepalive:
+    post:
+      summary: Keep session alive (canonical)
+      tags: [RGS]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId:
+                  type: string
+      responses:
+        '200':
+          description: Session refreshed
+
+  /session/heartbeat:
+    post:
+      summary: Keep session alive (deprecated)
+      deprecated: true
+      tags: [RGS]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        $ref: '#/components/requestBodies/SessionHeartbeat'
+      responses:
+        '200':
+          description: Session refreshed with deprecation headers
+
+  /round/start:
+    post:
+      summary: Start game round
+      tags: [RGS]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, gameId, roundId]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                gameId:
+                  type: string
+                roundId:
+                  type: string
+      responses:
+        '200':
+          description: Round started
+
+  /round/end:
+    post:
+      summary: End game round
+      tags: [RGS]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, roundId]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                roundId:
+                  type: string
+      responses:
+        '200':
+          description: Round ended
+
+  /round/cancel:
+    post:
+      summary: Cancel game round
+      tags: [RGS]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playerId, roundId]
+              properties:
+                playerId:
+                  type: string
+                  format: uuid
+                roundId:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Round cancelled
+
+  /round/rollback:
+    post:
+      summary: Rollback transaction (canonical)
+      tags: [RGS]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/RollbackRequest'
+      responses:
+        '200':
+          description: Transaction rolled back
+
+  /rollback:
+    post:
+      summary: Rollback transaction (deprecated)
+      deprecated: true
+      tags: [RGS]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/RollbackRequest'
+      responses:
+        '200':
+          description: Rolled back with deprecation headers
+
+  /health:
+    get:
+      summary: Health check (canonical)
+      tags: [Admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, unhealthy]
+        '503':
+          description: Unhealthy
+    post:
+      summary: Health check (not allowed)
+      tags: [Admin]
+      responses:
+        '405':
+          description: Method Not Allowed
+          headers:
+            Allow:
+              schema:
+                type: string
+                enum: [GET]
+
+  /admin/health:
+    get:
+      summary: Admin health check
+      tags: [Admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Health status
+        '503':
+          description: Service unavailable
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: UUID v4 for request tracing
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: UUID v4 for idempotent operations (48h window)
+
+  schemas:
+    WalletResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [APPROVED, REJECTED]
+        reason:
+          type: string
+          pattern: '^RW-'
+        newBalance:
+          type: string
+          pattern: '^\d+\.\d{2}$'
+
+    PlayerStatus:
+      type: object
+      properties:
+        playerId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        kyc:
+          type: object
+        rgFlags:
+          type: object
+        activeSessions:
+          type: array
+
+  requestBodies:
+    WalletOperation:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [playerId, amount, currency]
+            properties:
+              playerId:
+                type: string
+                format: uuid
+              amount:
+                type: string
+                pattern: '^\d+\.\d{2}$'
+              currency:
+                type: string
+                enum: [EUR]
+
+    RGPeriod:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [playerId, until]
+            properties:
+              playerId:
+                type: string
+                format: uuid
+              until:
+                type: string
+                format: date-time
+
+    WebhookNotification:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [playerId]
+            properties:
+              playerId:
+                type: string
+                format: uuid
+
+    SessionHeartbeat:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [sessionId]
+            properties:
+              sessionId:
+                type: string
+
+    RollbackRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [playerId, transactionId]
+            properties:
+              playerId:
+                type: string
+                format: uuid
+              transactionId:
+                type: string
+                format: uuid
+              amount:
+                type: string
+                pattern: '^\d+\.\d{2}$'
+
+  responses:
+    WalletSuccess:
+      description: Wallet operation successful
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WalletResponse'
+
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code:
+                    type: string
+                    pattern: '^RW-'
+                  message:
+                    type: string
+              correlationId:
+                type: string
+                format: uuid

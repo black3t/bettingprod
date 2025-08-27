@@ -1,0 +1,1 @@
+{"version":3,"file":"singleFlight.d.ts","sourceRoot":"","sources":["../../src/middleware/singleFlight.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,QAAQ,EAAE,YAAY,EAAE,MAAM,SAAS,CAAC;AAM1D;;GAEG;AACH,wBAAgB,oBAAoB,CAAC,GAAG,EAAE,OAAO,EAAE,GAAG,EAAE,QAAQ,EAAE,IAAI,EAAE,YAAY,GAAG,IAAI,CAwB1F"}

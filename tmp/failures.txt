@@ -1,0 +1,141 @@
+--- /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T8_T9_T12_system.test.ts ---
+• T8, T9, T12 - System Tests T8 - Timeout/Busy path should handle concurrent requests gracefully
+Error: expect(received).toBeDefined()
+
+Received: undefined
+    at /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T8_T9_T12_system.test.ts:170:24
+    at Array.forEach (<anonymous>)
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T8_T9_T12_system.test.ts:158:17)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T8, T9, T12 - System Tests T9 - Webhook delivery should send playerExcluded webhook with correct payload
+Error: expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+Expected: StringContaining "/playerExcluded", ObjectContaining {"playerId": Any<String>, "reason": "self_exclusion", "ts": Any<String>}, Any<Object>
+
+Number of calls: 0
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T8_T9_T12_system.test.ts:199:34)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T8, T9, T12 - System Tests T9 - Webhook delivery should send balanceChanged webhook with correct payload
+Error: expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+Expected: StringContaining "/balanceChanged", ObjectContaining {"newBalance": "1500.00", "playerId": Any<String>}, Any<Object>
+
+Number of calls: 0
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T8_T9_T12_system.test.ts:227:34)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T8, T9, T12 - System Tests T9 - Webhook delivery should retry webhook on failure with backoff
+Error: expect(jest.fn()).toHaveBeenCalledTimes(expected)
+
+Expected number of calls: 3
+Received number of calls: 0
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T8_T9_T12_system.test.ts:263:34)
+
+• T8, T9, T12 - System Tests T12 - Health/Readiness should handle Redis down gracefully in non-SQLite mode
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 503
+Received: 200
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T8_T9_T12_system.test.ts:349:31)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+--- end /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T8_T9_T12_system.test.ts ---
+
+--- /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T10_T11_compliance.test.ts ---
+• T10, T11 - Compliance Tests T11 - Arrotondamenti should store amounts consistently in minor units
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T10_T11_compliance.test.ts:300:31)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T10, T11 - Compliance Tests T11 - Arrotondamenti should handle edge cases correctly
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T10_T11_compliance.test.ts:339:35)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+--- end /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T10_T11_compliance.test.ts ---
+
+--- /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T2_T7_idempotency.test.ts ---
+• T2 & T7 - Idempotency Tests T2 - Idempotency generale should not duplicate debit with same idempotencyKey
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T2_T7_idempotency.test.ts:84:32)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T2 & T7 - Idempotency Tests T2 - Idempotency generale should not duplicate credit with same idempotencyKey
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T2_T7_idempotency.test.ts:130:32)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T2 & T7 - Idempotency Tests T7 - Idempotency su credit (replay) should handle multiple credit replays correctly
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T2_T7_idempotency.test.ts:193:35)
+
+• T2 & T7 - Idempotency Tests T7 - Idempotency su credit (replay) should store and return consistent idempotent response
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: "{\"error\":{\"code\":\"RW-SYS-000\",\"message\":\"Transaction failed\",\"correlationId\":\"11129a1f-8994-44b5-abfa-b4311d4872de\"}}"
+Received: "{\"error\":{\"code\":\"RW-SYS-000\",\"message\":\"Transaction failed\",\"correlationId\":\"c753074a-7b49-4a76-b93f-d48bd6db1176\"}}"
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T2_T7_idempotency.test.ts:262:46)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T2 & T7 - Idempotency Tests Edge cases should handle different idempotency keys as separate transactions
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T2_T7_idempotency.test.ts:305:32)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+--- end /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T2_T7_idempotency.test.ts ---
+
+--- /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T3_T4_T6_wallet.test.ts ---
+• T3, T4, T6 - Wallet Operations T3 - Fondi insufficienti should allow debit equal to balance
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T3_T4_T6_wallet.test.ts:169:31)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T3, T4, T6 - Wallet Operations T4 - Currency binding should accept matching currency
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T3_T4_T6_wallet.test.ts:241:31)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T3, T4, T6 - Wallet Operations T6 - Debit-Credit round-trip should maintain balance integrity in round-trip
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T3_T4_T6_wallet.test.ts:269:36)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+• T3, T4, T6 - Wallet Operations T6 - Debit-Credit round-trip should handle multiple round-trips correctly
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 500
+    at Object.<anonymous> (/Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T3_T4_T6_wallet.test.ts:344:33)
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+--- end /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/src/__tests__/T3_T4_T6_wallet.test.ts ---
+

@@ -1,0 +1,326 @@
+================================================================================
+                    RAWWAR PROJECT - IMPLEMENTATION INDEX
+================================================================================
+                Generated: 2025-08-26
+                Project: Casino Mock Platform with Orchestrator
+================================================================================
+
+This document provides a comprehensive index of all implemented services,
+organized by domain. Each service section lists all related files and their purposes.
+
+================================================================================
+SECTION 1: CASINO MOCK SERVICE
+================================================================================
+
+The Casino Mock simulates a real casino backend, providing wallet operations,
+KYC verification, limits checking, and responsible gaming features.
+
+PRIMARY ROUTES:
+---------------
+1. src/routes/walletRoutes.ts
+   - POST /wallet/debit - Deduct funds from player wallet
+   - POST /wallet/credit - Add funds to player wallet
+   - GET /wallet/balance/:playerId - Get current balance
+   - Implements idempotency via IdempotencyStore
+
+2. src/routes/limitsRoutes.ts
+   - POST /limits/check - Verify player betting limits
+   - GET /limits/:playerId - Get player's current limits
+   - Handles jurisdiction-specific limits
+
+3. src/routes/kycRoutes.ts  
+   - GET /kyc/:playerId - Get KYC status
+   - POST /kyc/verify - Trigger KYC verification
+   - Manages KYC states: pending, approved, rejected
+
+4. src/routes/rgRoutes.ts
+   - Responsible Gaming endpoints
+   - Reality check management
+   - Self-exclusion handling
+
+SERVICES:
+---------
+5. src/services/WalletService.ts
+   - Core wallet operations logic
+   - Balance management
+   - Transaction history
+   - Currency handling (EUR)
+
+6. src/services/LimitsService.ts
+   - Betting limits enforcement
+   - Jurisdiction-specific rules (MGA, UKGC)
+   - Max bet/win calculations
+
+7. src/services/KYCService.ts
+   - KYC verification logic
+   - Status management
+   - Integration with external KYC providers (mocked)
+
+8. src/services/ResponsibleGamingService.ts
+   - Reality check enforcement
+   - Session time tracking
+   - Self-exclusion management
+   - Cool-off periods
+
+9. src/services/CasinoClient.ts
+   - Client for making outbound casino requests
+   - Used by other services needing casino integration
+
+TESTS:
+------
+10. src/__tests__/T3_T4_T6_wallet.test.ts
+    - Comprehensive wallet operation tests
+    - Idempotency tests
+    - Concurrency tests
+
+11. src/__tests__/T5_limits_check.test.ts
+    - Limits enforcement tests
+    - Jurisdiction-specific tests
+
+12. src/__tests__/a3_idempotency_persist_wallet.test.ts
+    - Wallet idempotency persistence tests
+    - Cross-restart durability tests
+
+13. src/__tests__/E2E_rgs_casino.test.ts
+    - End-to-end integration tests
+    - Full flow testing
+
+14. src/__tests__/audit/rgs-casino-contract.test.ts
+    - Contract compliance tests
+    - API contract validation
+
+DATABASE:
+---------
+15. Wallet Tables (via TypeORM/SQLite):
+    - wallet_transactions
+    - wallet_balances
+    - idempotency_keys (shared)
+    - responsible_gaming
+
+================================================================================
+SECTION 2: RGS MOCK SERVICE
+================================================================================
+
+The RGS (Remote Gaming Server) Mock simulates game round management,
+transaction processing, and session validation.
+
+PRIMARY ROUTES:
+---------------
+1. src/routes/rgsGameRoutes.ts
+   - POST /rgs/api/v1/session/validate - Validate player session
+   - POST /rgs/api/v1/round/start - Start a game round
+   - POST /rgs/api/v1/round/end - End a game round
+   - POST /rgs/api/v1/transaction/debit - Process debit transaction
+   - POST /rgs/api/v1/transaction/credit - Process credit transaction
+
+MIDDLEWARE:
+-----------
+2. src/middleware/rgsAuth.ts
+   - RGS authentication handling
+   - API key validation
+   - Bearer token processing
+
+3. src/middleware/rgsSingleFlight.ts
+   - Prevents duplicate concurrent requests
+   - Request deduplication
+   - In-flight request management
+
+SERVICES:
+---------
+4. src/services/RgsOutbox.ts
+   - Outbox pattern implementation for RGS events
+   - Ensures exactly-once delivery
+   - Event persistence and retry logic
+
+TESTS:
+------
+5. src/__tests__/RGS_integration.test.ts
+   - RGS integration tests
+   - Round lifecycle tests
+   - Transaction processing tests
+
+FEATURES:
+---------
+- Batch transaction support (up to 200 items)
+- Idempotency with 48-hour window
+- Session validation with limits
+- Jurisdiction-aware processing
+- Mock balance management
+
+================================================================================
+SECTION 3: ORCHESTRATOR SERVICE
+================================================================================
+
+The Orchestrator manages room allocation, player assignment, and coordinates
+between Frontend, Backend Game, RGS, and Casino services.
+
+PRIMARY ROUTES:
+---------------
+1. src/routes/orchestratorRoutes.ts
+   IMPLEMENTED (but not conforming to bible):
+   - GET /health - Health check
+   - POST /health - Method discipline (405)
+   - POST /probe/round - Development testing endpoint
+   - POST /rooms/allocate - Room allocation
+   - GET /rooms/state - Get all rooms state
+   - POST /rooms/join - Join a room
+   - POST /rooms/leave - Leave a room
+   - POST /rooms/close - Close a room
+   - POST /match/create - Create match (SHOULD BE IN GAME BACKEND)
+   - POST /match/join - Join match (SHOULD BE IN GAME BACKEND)
+   - POST /match/start - Start match (SHOULD BE IN GAME BACKEND)
+   - GET /openapi.json - OpenAPI spec (dev only)
+   - POST /openapi.json - Method discipline (405)
+
+   MISSING (required by bible):
+   - POST /assign - Main player assignment endpoint
+   - GET /rooms - Room list/health
+   - POST /rooms - Create room
+   - DELETE /rooms/{roomId} - Drain & terminate room
+
+CORE SERVICE:
+-------------
+2. src/orchestrator/OrchestratorService.ts
+   - Room management via RoomManager class
+   - Circuit breaker implementation
+   - Retry logic with exponential backoff
+   - Idempotency handling (in-memory)
+   - RGS communication
+   - Event emission
+
+3. src/orchestrator/bus/InMemoryBus.ts
+   - Event bus implementation
+   - Pub/sub pattern
+   - Event distribution
+
+4. src/orchestrator/schemas/events.ts
+   - Event type definitions
+   - Event schemas
+   - Type safety for events
+
+MIDDLEWARE:
+-----------
+5. src/middleware/orchRateLimit.ts
+   - Rate limiting for orchestrator endpoints
+   - Sliding window algorithm
+   - GDPR-compliant key hashing
+
+METRICS:
+--------
+6. src/metrics/orchMetrics.ts
+   - Prometheus metrics for orchestrator
+   - Request counters
+   - Circuit breaker metrics
+   - Idempotency hit/miss tracking
+   - HTTP histogram
+   - Room gauges
+
+TESTS:
+------
+7. src/__tests__/orch_e2e.test.ts
+   - End-to-end orchestrator tests
+   - Full flow testing
+
+8. src/__tests__/orch_header_propagation.test.ts
+   - Header propagation tests
+   - Correlation ID tracking
+   - Authorization forwarding
+
+9. src/__tests__/orch_retry_cb_logging.test.ts
+   - Retry mechanism tests
+   - Circuit breaker tests
+   - Logging verification
+
+CONFIGURATION:
+--------------
+10. src/orchestrator/openapi.orch.dev.json
+    - OpenAPI specification for orchestrator
+    - Development-only documentation
+
+ISSUES & NON-COMPLIANCE:
+------------------------
+CRITICAL ISSUES (not following bible):
+1. Missing POST /assign endpoint (main orchestrator function)
+2. Room allocation logic doesn't follow specification (should minimize |count-2500|)
+3. Match endpoints should be in Game Backend, not Orchestrator
+4. No jitter implementation (±2000ms required)
+5. Idempotency not persistent (48h requirement violated)
+6. Wrong error codes used (RW-GAME-*, RW-CAS-* instead of RW-ORCH-*)
+7. Rate limiting implemented but not required by bible
+
+================================================================================
+SECTION 4: SHARED INFRASTRUCTURE
+================================================================================
+
+MIDDLEWARE:
+-----------
+1. src/middleware/auth.ts - General authentication
+2. src/middleware/validation.ts - Request validation
+3. src/middleware/timeout.ts - Request timeout handling
+4. src/middleware/concurrent.ts - Concurrency control
+5. src/middleware/idempotency.ts - Idempotency handling
+6. src/middleware/singleFlight.ts - Single flight pattern
+
+SERVICES:
+---------
+1. src/services/IdempotencyStore.ts
+   - Persistent idempotency storage
+   - Composite key generation
+   - 48-hour TTL management
+
+2. src/services/AuthService.ts - Authentication service
+3. src/services/PlayerService.ts - Player management
+4. src/services/UserService.ts - User operations
+5. src/services/GameService.ts - Game logic
+6. src/services/WebhookService.ts - Webhook handling
+7. src/services/WebhookDispatcher.ts - Webhook dispatch
+8. src/services/WebhookForwarder.ts - Webhook forwarding
+9. src/services/WebhookSender.ts - Webhook sending
+
+UTILITIES:
+----------
+1. src/utils/logger.ts - GDPR-compliant logging
+2. src/utils/errorCodes.ts - Error code definitions
+3. src/utils/money.ts - Money formatting/operations
+4. src/utils/health.ts - Health check utilities
+5. src/utils/healthDegrade.ts - Degraded mode handling
+6. src/utils/httpError.ts - HTTP error handling
+7. src/utils/sessionStore.ts - Session management
+
+REGISTRY:
+---------
+1. src/registry/rw.ts
+   - RW error code registry
+   - Error building functions
+   - Error mapping
+
+DATABASE:
+---------
+1. src/config/database.ts - Database configuration
+2. src/config/database-sqlite.ts - SQLite configuration
+3. src/config/redis.ts - Redis configuration
+
+================================================================================
+SECTION 5: TESTING INFRASTRUCTURE
+================================================================================
+
+1. src/__tests__/setup.ts - Test setup
+2. src/__tests__/helpers/unique.ts - Test helpers
+3. src/__tests__/smoke/health.test.ts - Smoke tests
+4. Various compliance tests (T1-T12)
+5. A1-A3, B4 test suites for specific features
+
+================================================================================
+SECTION 6: CONFIGURATION & BUILD
+================================================================================
+
+1. package.json - Dependencies and scripts
+2. tsconfig.json - TypeScript configuration
+3. jest.config.js - Jest test configuration
+4. Docker setup (docker-compose.yml)
+5. Database migrations in database/migrations/
+6. Scripts in scripts/ directory
+
+================================================================================
+END OF INDEX
+================================================================================

@@ -1,0 +1,18 @@
+{"level":"info","message":"Running in TEST MODE with SQLite database","timestamp":"2025-08-26T21:14:40.749Z"}
+{"level":"info","message":"Creating SQLite database at: /Users/rico/Desktop/aradev/zbet/production/casino-mock-platform/casino.db","timestamp":"2025-08-26T21:14:40.750Z"}
+{"level":"info","message":"Using in-memory session storage (test mode)","timestamp":"2025-08-26T21:14:40.758Z"}
+{"level":"info","message":"Casino Mock Platform running on port 3001","timestamp":"2025-08-26T21:14:40.801Z"}
+{"level":"info","message":"Environment: development","timestamp":"2025-08-26T21:14:40.801Z"}
+{"level":"info","message":"Health check: http://localhost:3001/health","timestamp":"2025-08-26T21:14:40.801Z"}
+{"level":"info","message":"SQLite database initialized","timestamp":"2025-08-26T21:14:40.804Z"}
+{"level":"info","message":"Running in TEST MODE with SQLite database","timestamp":"2025-08-27T10:25:30.380Z"}
+{"level":"info","message":"Using in-memory session storage (test mode)","timestamp":"2025-08-27T10:25:30.397Z"}
+{"level":"info","message":"Casino Mock Platform running on port 3002","timestamp":"2025-08-27T10:25:30.453Z"}
+{"level":"info","message":"Environment: test","timestamp":"2025-08-27T10:25:30.453Z"}
+{"level":"info","message":"Health check: http://localhost:3002/health","timestamp":"2025-08-27T10:25:30.453Z"}
+{"correlationId":"0f557152-f0e6-40d9-ad31-8e06b436a88a","level":"info","message":"Request","method":"POST","path":"/credit","playerId":"p-1","status":200,"timestamp":"2025-08-27T10:29:23.903Z"}
+{"amount":"3.00","correlationId":"fc9a128d-c809-4c8c-a219-eea167dd9e4f","level":"info","message":"Wallet debit successful","newBalance":"64.00","playerId":"p-1","timestamp":"2025-08-27T10:29:23.910Z"}
+{"correlationId":"fc9a128d-c809-4c8c-a219-eea167dd9e4f","level":"info","message":"Request","method":"POST","path":"/debit","playerId":"p-1","status":200,"timestamp":"2025-08-27T10:29:23.910Z"}
+{"correlationId":"66d42a71-d55d-40f2-ac44-f5e2feb0c9bf","level":"info","message":"Request","method":"POST","path":"/debit","playerId":"p-1","status":200,"timestamp":"2025-08-27T10:29:23.916Z"}
+{"idempotencyKey":"prodidmp-17562905633N","level":"info","message":"Cancel idempotency hit","timestamp":"2025-08-27T10:29:23.921Z"}
+{"correlationId":"03997166-d69c-4525-bc35-27a6e0628a65","level":"info","message":"Request","method":"POST","path":"/cancel","playerId":"p-1","status":200,"timestamp":"2025-08-27T10:29:23.921Z"}

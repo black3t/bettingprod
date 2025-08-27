@@ -1,0 +1,26 @@
+[dotenv@17.2.1] injecting env (14) from .env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+[BOOT] 2025-08-27T10:25:30.450Z express 5.1.0
+[MOUNT] Casino routes at: /casino/api/v1
+[MOUNT] Casino health at: /casino/api/v1/health
+[MOUNT] Creating RGS router
+[MOUNT] RGS router at: /rgs/api/v1
+=== ENV VALUES ===
+NODE_ENV: test
+API_BASE_PATH: /casino/api/v1
+RGS_BASE_PATH: undefined
+ORCH_ENABLED: undefined
+ORCH_BASE_PATH: undefined
+COMPAT_ROUTES: undefined
+DEV_SEED: undefined
+USE_SQLITE: true
+=== VERSIONS ===
+Node: v20.11.1
+Express: 5.1.0
+=== RUNTIME VALUES ===
+RGS_BASE_PATH runtime: /rgs/api/v1
+RGS_BASE_PATH length: 11
+RGS_BASE_PATH charCodes: [
+  47, 114, 103, 115,  47,
+  97, 112, 105,  47, 118,
+  49
+]

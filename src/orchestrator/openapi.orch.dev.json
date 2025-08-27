@@ -1,0 +1,32 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "RAWWAR Orchestrator (DEV)", "version": "0.1.0" },
+  "servers": [{ "url": "/orch/api/v1" }],
+  "paths": {
+    "/health": {
+      "get": { "summary": "Health (dev)", "responses": { "200": { "description": "OK" } } },
+      "post": {
+        "summary": "Method not allowed",
+        "responses": { "405": { "description": "Method Not Allowed" } }
+      }
+    },
+    "/rooms/allocate": {
+      "post": {
+        "summary": "Allocate or reuse a room",
+        "responses": { "200": { "description": "Allocated" }, "422": { "description": "Invalid request" } }
+      }
+    },
+    "/rooms/state": {
+      "get": {
+        "summary": "Rooms state (dev)",
+        "responses": { "200": { "description": "State" } }
+      }
+    },
+    "/rooms/join": { "post": { "summary": "Join room", "responses": { "200": { "description": "Joined" }, "422": { "description": "Invalid" } } } },
+    "/rooms/leave": { "post": { "summary": "Leave room", "responses": { "200": { "description": "Left" }, "422": { "description": "Invalid" } } } },
+    "/rooms/close": { "post": { "summary": "Close room", "responses": { "200": { "description": "Closed" }, "422": { "description": "Invalid" } } } },
+    "/match/create": { "post": { "summary": "Create match (shim)", "responses": { "202": { "description": "Accepted" }, "422": { "description": "Invalid" } } } },
+    "/match/join":   { "post": { "summary": "Join match (shim)",   "responses": { "202": { "description": "Accepted" }, "422": { "description": "Invalid" } } } },
+    "/match/start":  { "post": { "summary": "Start match (shim)",  "responses": { "202": { "description": "Accepted" }, "422": { "description": "Invalid" } } } }
+  }
+}
