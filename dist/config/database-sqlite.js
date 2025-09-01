@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.db = void 0;
+exports.getActiveDbPath = getActiveDbPath;
 exports.healthDbCheck = healthDbCheck;
 exports.initSQLite = initSQLite;
 exports.querySQLite = querySQLite;
@@ -16,6 +17,13 @@ const fs_1 = __importDefault(require("fs"));
 let db = null;
 exports.db = db;
 let dbInitialized = false;
+let ACTIVE_DB_PATH_ABS = '';
+function getActiveDbPath() { return ACTIVE_DB_PATH_ABS; }
+function resolveDbPath() {
+    const raw = process.env.DB_PATH || 'casino.db';
+    const abs = path_1.default.isAbsolute(raw) ? raw : path_1.default.resolve(process.cwd(), raw);
+    return abs;
+}
 async function healthDbCheck() {
     try {
         if (process.env.USE_SQLITE === 'true') {
@@ -37,8 +45,9 @@ async function initSQLite() {
         return db;
     }
     // Use absolute path for SQLite database
-    const dbPath = path_1.default.join(process.cwd(), 'casino.db');
-    logger_1.logger.info(`Creating SQLite database at: ${dbPath}`);
+    const dbPath = resolveDbPath();
+    ACTIVE_DB_PATH_ABS = dbPath;
+    logger_1.logger.info(`[DB] sqlite path=${dbPath}`);
     try {
         // Open database with serialized mode
         exports.db = db = await (0, sqlite_1.open)({

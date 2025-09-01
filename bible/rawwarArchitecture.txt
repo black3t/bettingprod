@@ -1,0 +1,2211 @@
+# RAWWAR System Architecture - Complete Functional Specification
+
+## Executive Summary
+
+RAWWAR è un gioco di eliminazione battle royale per 8 giocatori virtuali integrato nell'ecosistema del gambling online. Il sistema implementa un'architettura **multi-stanza parallela** dove migliaia di stanze indipendenti operano simultaneamente, ciascuna con il proprio match e pool di scommettitori (1.000-5.000 spettatori per stanza). L'architettura comprende 5 servizi principali: Frontend, Backend per stanza, Orchestrator (load balancer), RGS e Casino, garantendo scalabilità orizzontale attraverso la creazione dinamica di nuove stanze basata sul carico.
+
+---
+
+## 1. FRONTEND SERVICE - Detailed Functional Specification
+
+### 1.1 Core Responsibilities
+
+Il Frontend è l'interfaccia utente che gestisce la presentazione visuale, l'interazione con il giocatore e la sincronizzazione real-time con la specifica stanza assegnata. Ogni istanza frontend si connette a una singola stanza per volta attraverso WebSocket dedicato, ricevendo aggiornamenti solo per il match di quella stanza specifica.
+
+### 1.2 User Journey Completo
+
+#### 1.2.1 Entry Flow & Room Assignment
+- **Landing**: Il giocatore arriva dalla lobby del casino o tramite deep link diretto
+- **Authentication**: Validazione automatica del token di sessione casino (seamless login)
+- **Room Assignment Request**: Frontend richiede assegnazione stanza all'Orchestrator Service
+- **Orchestrator Response**: Riceve roomId e WebSocket endpoint della stanza assegnata
+- **Room Connection**: Stabilisce connessione WebSocket diretta alla stanza specifica
+- **Balance Display**: Mostra il saldo wallet in tempo reale (aggiornato dopo ogni transazione)
+- **Room Synchronization**: Sincronizzazione con il match corrente della stanza assegnata
+
+#### 1.2.2 Betting Phase (60 secondi)
+Durante questa fase critica, il frontend deve:
+
+- **Timer Countdown**: Display prominente del tempo rimanente con warning a 10s dalla chiusura
+- **Betting Interface**: 
+  - Grid 8 posizioni per selezione player
+  - Chip selector per importo scommessa (preset: 1€, 5€, 10€, 25€, 50€, 100€, custom)
+  - Pannello bet types: Winner, First to Die, Exact 2, Exact 3, Top 2, Top 3
+  - Running total delle scommesse piazzate
+  - Quick bet: ripeti ultima scommessa
+
+- **Bet Management**:
+  - Add bet: aggiunge al carrello locale
+  - Modify bet: cambia importo o selezione
+  - Cancel bet: rimuove dal carrello
+  - Clear all: cancella tutte le bet non confermate
+
+- **Real-time Updates**:
+  - Numero totale di giocatori che stanno scommettendo
+  - Pot totale stimato
+  - Le proprie bet in pending
+
+#### 1.2.3 Betting Close & Validation
+- **Hard stop** a 00:00 - nessuna modifica possibile
+- **Validation spinner** mentre il backend conferma con RGS
+- **Confirmation/Rejection** per ogni bet con feedback visivo immediato
+- **Balance update** immediato se bet accettate
+
+#### 1.2.4 Playing Phase (14-20 secondi)
+- **Buffer state** (1s): "Match starting..." overlay
+- **Elimination sequence** (7 eliminazioni):
+  - Video player fullscreen per ogni eliminazione
+  - Player card che si spegne/esplode quando eliminato
+  - Counter eliminati: "7 remaining... 6 remaining..."
+  - Audio sync con video (controllabile: mute/volume)
+
+#### 1.2.5 Results Phase (7 secondi)
+- **Results display**: Overlay/tab con classifica finale
+- **Leaderboard visualization** (ordine corretto):
+  - Posizione 1 (Winner) - immagine player con corona dorata
+  - Posizione 2 (2nd place) - immagine player con medaglia argento
+  - Posizione 3 (3rd place) - immagine player con medaglia bronzo
+  - Posizione 4 (4th place) - immagine player
+  - Posizione 5 (5th place) - immagine player
+  - Posizione 6 (6th place) - immagine player
+  - Posizione 7 (7th place) - immagine player
+  - Posizione 8 (First eliminated) - immagine player con X rossa
+  - Le proprie vincite/perdite evidenziate con colori (verde/rosso)
+  - Nuovo balance aggiornato in tempo reale
+
+#### 1.2.6 Transition to Next Match in Room
+- **Manual Enrollment Required**: Player deve cliccare esplicitamente "Join Next Round" (no auto-enrollment)
+- **Room Persistence**: Rimane nella stessa stanza se attiva
+- **Quick Re-bet**: Ripete ultima scommessa MA richiede conferma esplicita dell'utente
+- **Opzione "Leave Room"**: Esce dalla stanza e ritorna alla lobby
+- **Opzione "Change Room"**: Richiede nuova assegnazione stanza dall'Orchestrator
+
+### 1.3 State Management Dettagliato
+
+Il frontend mantiene uno stato locale complesso che deve essere sempre sincronizzato:
+
+#### 1.3.1 User State
+- Session info (token, expiry, refresh schedule)
+- Balance (aggiornato real-time dopo ogni transazione)
+- Betting limits personali
+- Preference (audio, video quality, NO auto-rebet)
+- History recente (ultimi 10 match nella stanza)
+- Current room assignment (roomId, room capacity, current players)
+
+#### 1.3.2 Room & Match State
+- Current room ID e room metadata
+- Current match ID within room
+- Phase: lobby|betting_open|betting_closed|playing|finished
+- Timers per ogni fase (sincronizzati con room backend)
+- Elimination sequence (ricevuta solo dopo betting close, unica per stanza)
+- Current elimination index durante playing
+- Results data specifici della stanza
+
+#### 1.3.3 Betting State
+- Cart delle bet non confermate
+- Confirmed bets per il match corrente
+- Validation status per ogni bet
+- Running totals e potential wins
+
+#### 1.3.4 Connection State
+- WebSocket status
+- Reconnection attempts counter
+- Last received message timestamp
+- Queued actions durante disconnect
+
+### 1.4 Comunicazione con Backend
+
+#### 1.4.1 HTTP API Calls
+- `GET /api/match/current` - Stato match corrente
+- `GET /api/user/balance` - Balance aggiornato
+- `POST /api/bets/place` - Conferma bet (con idempotency key)
+- `DELETE /api/bets/:id` - Cancella bet (solo in betting phase)
+- `GET /api/history/recent` - Ultimi 10 match giocati
+
+#### 1.4.2 WebSocket Events (Receive) - Room Scoped
+- `room:joined` - Confermato ingresso nella stanza con roomId
+- `room:playerCount` - Aggiornamento numero spettatori nella stanza
+- `match:phase_changed` - Cambio fase del match nella stanza
+- `match:timer_update` - Update countdown
+- `match:sequence_ready` - Sequenza eliminazioni unica per questa stanza
+- `match:elimination` - Prossima eliminazione nel match della stanza
+- `match:results` - Risultati finali del match della stanza
+- `bet:confirmed` - Bet accettata
+- `bet:rejected` - Bet rifiutata con reason
+- `balance:updated` - Nuovo balance
+
+#### 1.4.3 WebSocket Events (Send)
+- `room:join` - Richiesta ingresso stanza (con roomId dall'Orchestrator)
+- `bet:place` - Richiesta piazzamento
+- `bet:cancel` - Richiesta cancellazione
+- `heartbeat` - Keep-alive ogni 30s
+
+### 1.5 Asset Management
+
+#### 1.5.1 Video Assets - Matrix System (Killer → Victim)
+- **Struttura Matrix**: 8 killers × 7 victims = 56 combinazioni uniche di eliminazione
+- **Varianti per combinazione**: 10 video diversi per varietà visuale
+- **Totale Production**: 560 video files (56 combinazioni × 10 varianti)
+- **Pre-Production**: 56 video files (1 video per combinazione)
+- **Formato**: MP4 H.264, 1080p, 2-3 secondi per eliminazione
+- **Selezione**: Random da pool di 10 varianti per ogni killer-victim pair
+- **Pre-loading**: Durante betting phase per smooth playback
+- **Fallback**: 720p version su connessioni < 5 Mbps
+
+#### 1.5.2 Static Assets
+- Player avatars (8 unique)
+- Chip graphics
+- UI elements (buttons, cards, overlays)
+- Sound effects (bet placed, win, loss, countdown)
+
+### 1.6 Error Handling Frontend
+
+#### 1.6.1 Network Errors
+- **Connection lost**: Banner persistente + auto-reconnect con exponential backoff
+- **Slow connection**: Downgrade video quality automatico
+- **Request timeout**: Retry automatico fino a 3 volte poi messaggio user
+
+#### 1.6.2 Betting Errors
+- **Insufficient funds**: Highlight balance + suggerimento ridurre importo
+- **Bet rejected**: Specific message (limits, technical error, match closed)
+- **Validation timeout**: Opzione retry manuale o auto-cancel
+
+#### 1.6.3 State Recovery
+- **Page refresh**: Recupera stato da sessionStorage + server sync
+- **Browser crash**: Resume da last known state salvato ogni 5s
+- **Video load error**: Skip a prossima eliminazione + log incident
+
+### 1.7 Security Measures
+
+- **No sensitive data in localStorage** (solo sessionStorage)
+- **Token refresh** automatico 5 minuti prima expiry
+- **Anti-tampering**: Checksum su critical state
+- **Rate limiting** client-side su azioni (max 1 bet ogni 2 secondi)
+- **CSP headers** strict per prevenire XSS
+- **Iframe embedding** disabled o whitelist casino domain
+
+---
+
+## 2. BACKEND RAWWAR SERVICE - Room-Based Architecture
+
+### 2.1 Core Architecture - Multi-Room System
+
+Il Backend RAWWAR implementa un'architettura multi-stanza dove ogni stanza è un processo isolato che gestisce il proprio match indipendente. Un Orchestrator Service coordina la creazione, assegnazione e terminazione delle stanze basandosi sul carico del sistema.
+
+### 2.2 Orchestrator Service (NEW COMPONENT)
+
+#### 2.2.0 Orchestrator Responsibilities
+- **Room Lifecycle Management**: Crea, monitora e termina stanze
+- **Player Assignment**: Distribuisce nuovi giocatori nelle stanze disponibili
+- **Load Balancing**: Bilancia il carico tra stanze attive
+- **Health Monitoring**: Controlla lo stato di salute di ogni stanza
+- **Scaling Decisions**: Decide quando creare nuove stanze o terminare quelle vuote
+
+#### 2.2.1 Room Creation & Assignment Algorithm
+```typescript
+interface RoomConfig {
+  minPlayers: 100;        // Minimo per mantenere stanza attiva
+  maxPlayers: 5000;       // Massimo capacity per stanza
+  optimalPlayers: 2500;   // Target ottimale
+  creationThreshold: 0.9; // Crea nuova stanza quando tutte > 90% capacity
+}
+
+function assignPlayerToRoom(playerId: string): RoomAssignment {
+  const availableRooms = rooms.filter(r => 
+    r.state === 'ACTIVE' && 
+    r.playerCount < r.maxCapacity * 0.9
+  );
+  
+  if (availableRooms.length === 0) {
+    const newRoom = createNewRoom();
+    return { roomId: newRoom.id, endpoint: newRoom.wsEndpoint };
+  }
+  
+  // Assegna alla stanza con miglior balance
+  const optimalRoom = availableRooms.reduce((best, room) => 
+    Math.abs(room.playerCount - roomConfig.optimalPlayers) <
+    Math.abs(best.playerCount - roomConfig.optimalPlayers) ? room : best
+  );
+  
+  return { roomId: optimalRoom.id, endpoint: optimalRoom.wsEndpoint };
+}
+```
+
+### 2.3 Room Backend Service
+
+#### 2.3.1 Room Lifecycle
+Ogni stanza opera indipendentemente con proprio:
+- **Process/Container dedicato**: Isolamento completo delle risorse
+- **State Machine proprio**: Gestione autonoma del match lifecycle
+- **Database connection pool**: Connessioni dedicate per la stanza
+- **WebSocket server**: Endpoint unico per i client della stanza
+
+#### 2.3.2 Room Match Generation
+Ogni stanza genera match continui ogni 82-88 secondi:
+
+- **Match ID**: `{roomId}_{timestamp}_{uuid}` per tracciabilità
+- **State Machine** (per room):
+  ```
+  ROOM_CREATED → WAITING_PLAYERS → MATCH_ACTIVE → MATCH_COMPLETE
+        ↑                                               ↓
+        ←────────── (se playerCount > minPlayers) ─────←
+  ```
+
+#### 2.3.3 Betting Phase Management (Per Room)
+Durante i 60 secondi di betting, ogni room backend:
+
+- **Accetta bet requests** solo dai giocatori nella stanza
+- **Mantiene bet in stato PENDING** fino a conferma RGS
+- **Gestisce modifiche/cancellazioni** con version control
+- **Al closing (T-0)**:
+  - Lock istantaneo - nessuna nuova bet nella stanza
+  - Batch validation con RGS per tutte le bet della stanza
+  - Conferma/reject di ogni bet
+  - Generazione elimination sequence UNICA per questa stanza
+
+#### 2.3.4 Sequence Generation (Provably Fair Per Room)
+Ogni stanza genera la propria sequenza unica e verificabile:
+
+- **Pre-Match Publication**:
+  - Server genera `serverSeed` segreto per la stanza
+  - Pubblica `serverSeedHash = SHA256(serverSeed)` PRIMA del betting
+
+- **Input Seeds** (Room-Specific):
+  - Server seed: unico per stanza e match (segreto)
+  - Client seed: `SHA256(all_room_bets)` - hash di tutte le bet della stanza
+  - Room ID: identificatore unico della stanza
+  - Timestamp: betting close time
+
+- **Algorithm**:
+  ```
+  combined_seed = SHA256(serverSeed + clientSeed + roomId + timestamp)
+  rng = CSPRNG(combined_seed)  // NOT SeededRandom
+  sequence = FisherYatesShuffle([1,2,3,4,5,6,7,8], rng)
+  ```
+
+- **Post-Match Verification**:
+  - Server rivela `serverSeed` originale
+  - Giocatori verificano: `SHA256(serverSeed) === serverSeedHash`
+  - Possono ricostruire la sequenza con gli input pubblicati
+
+#### 2.2.4 Playing Phase Orchestration
+- **Broadcast sequence** al Frontend (dopo betting close)
+- **Track progression** per late-joiners
+- **Monitor timing** per anomaly detection
+- **Log ogni evento** per replay/dispute
+
+#### 2.2.5 Settlement Calculation
+Il settlement è l'operazione più critica:
+
+- **Per ogni bet vincente**:
+  - Verifica se vincente
+  - Calcola payout = stake × odds
+  - Crea settlement line
+
+- **Aggregazione**:
+  - Totale vincite per user
+  - Totale vincite per match
+  - Reconciliation check
+
+- **Esecuzione**:
+  - Invia credit requests a RGS
+  - Gestisce retry su failure
+  - Conferma completion
+
+### 2.3 Bet Processing Engine
+
+#### 2.3.1 Bet Validation Rules
+Ogni bet deve passare validazioni multiple:
+
+- **Local Validation** (immediata):
+  - Match in stato BETTING_OPEN
+  - Importo tra MIN_BET e MAX_BET
+  - Selezione valida per bet type
+  - Non duplicata (stesso user/match/type/selection)
+  - Nota: Multiple bet dello stesso tipo possibili (es. Winner su player 1 E Winner su player 2)
+
+- **RGS Validation** (asincrona):
+  - Fondi sufficienti
+  - Limiti giocatore non superati
+  - Sessione valida
+  - No self-exclusion attiva
+
+#### 2.3.2 Bet Types Processing
+Ogni tipo di scommessa ha logica specifica e odds predefinite:
+
+| Bet Type | Descrizione | Posizioni Vincenti | Selezioni Required | Odds | Payout Example (10€ bet) |
+|----------|-------------|-------------------|-------------------|------|--------------------------|
+| **Winner** | Chi vince (1° classificato) | Posizione 1 | 1 avatar | 7.64:1 | 76.40€ |
+| **First to Die** | Primo eliminato (8° classificato) | Posizione 8 | 1 avatar | 7.64:1 | 76.40€ |
+| **Top 2** | Nei primi 2 (any order) | Posizioni 1 o 2 | 2 avatars | 27:1 | 270€ |
+| **Top 3** | Nei primi 3 (any order) | Posizioni 1, 2 o 3 | 3 avatars | 53:1 | 530€ |
+| **Exact 2** | Esatto 1° e 2° posto | Pos 1-2 ordine esatto | 2 avatars ordinati | 55:1 | 550€ |
+| **Exact 3** | Esatto 1°, 2° e 3° posto | Pos 1-2-3 ordine esatto | 3 avatars ordinati | 335:1 | 3350€ |
+
+**RTP**: 95.50% certificato da laboratorio indipendente (GLI/eCOGRA).
+
+**Nota**: Il calcolo matematico completo e certificato dell'RTP verrà allegato in appendice con proof combinatoria verificata da laboratorio accreditato (GLI/eCOGRA).
+
+**Settlement Calculation**:
+```
+payout = stake × odds
+net_win = payout - stake
+```
+
+**Validazione Selezioni e Vincita**:
+- **Winner/First to Die**: Richiede selezione di 1 avatar. Vince se l'avatar finisce nella posizione indicata
+- **Top 2**: Richiede selezione di 2 avatars. Vince se ENTRAMBI finiscono nelle posizioni 1-2 (qualsiasi ordine)
+- **Top 3**: Richiede selezione di 3 avatars. Vince se TUTTI E TRE finiscono nelle posizioni 1-2-3 (qualsiasi ordine)
+- **Exact 2**: Richiede selezione ordinata di 2 avatars. Vince se finiscono esattamente 1° e 2° nell'ordine selezionato
+- **Exact 3**: Richiede selezione ordinata di 3 avatars. Vince se finiscono esattamente 1°, 2° e 3° nell'ordine selezionato
+- Multiple bets dello stesso tipo permesse (es. 2 Winner bets su avatars diversi)
+
+**Limiti di Scommessa e Vincita**:
+
+| Giurisdizione | Min Bet | Max Bet | Max Win per Round |
+|---------------|---------|---------|-------------------|
+| UKGC (UK) | 0.10€ | 100€ | 3,000€ |
+| MGA (Malta) | 0.20€ | 200€ | 3,000€ |
+| Curacao | 0.10€ | 500€ | 3,000€ |
+| Default | 0.10€ | 100€ | 3,000€ |
+
+Max Win: Configurabile per giurisdizione (default 300x stake, massimo 3,000€)
+
+**Nota**: La tabella verrà ampliata includendo mercati ulteriori (es. Italia ADM, Spagna, ecc.) con i rispettivi cap regolatori.
+
+#### 2.3.3 Idempotency Management
+Cruciale per evitare doppie scommesse:
+
+- **Idempotency Key**: Required su ogni bet request
+- **Storage**: 24h in database con stato
+- **Stati**: PROCESSING → SUCCESS/FAILED
+- **Response**: Stesso risultato per key duplicate
+
+### 2.4 Communication Protocols
+
+#### 2.4.1 Frontend Communication
+**HTTP REST API**:
+- Sync request/response per azioni critiche
+- JSON payload con versioning
+- Rate limiting per user/IP
+- CORS configurato per casino domains
+
+**WebSocket**:
+- Event-driven per real-time updates
+- Heartbeat ogni 30s
+- Auto-reconnect con state recovery
+- Room-based per match isolation
+
+#### 2.4.2 RGS Integration
+Il Backend comunica con RGS per ogni transazione finanziaria:
+
+**Session Management**:
+- Validate session on player join
+- Refresh token prima di expiry
+- Handle session termination
+
+**Transaction Flow**:
+```
+Backend → RGS: "Debit 100€ for bet X on match Y"
+RGS → Casino: "Debit main wallet"
+Casino → RGS: "Success/Failure"
+RGS → Backend: "Transaction confirmed/rejected"
+```
+
+**Error Handling**:
+- Timeout: 5s poi retry
+- Max retries: 3 con exponential backoff
+- Fallback: Cancel bet e notify user
+
+### 2.5 Data Persistence Strategy
+
+#### 2.5.1 Primary Database (PostgreSQL)
+- **Matches table**: State, timings, sequence, results
+- **Bets table**: User bets con status tracking
+- **Settlements table**: Payout calculations
+- **Audit_logs table**: Ogni azione business-critical
+
+#### 2.5.2 Cache Layer (Redis)
+- **Current match state**: Per fast read
+- **User sessions**: Con TTL 30 min
+- **Idempotency keys**: Con expiry 24h
+- **Rate limit counters**: Per user/IP
+
+#### 2.5.3 Event Store
+- **Outbox pattern**: Eventi da pubblicare
+- **Inbox pattern**: Eventi processati
+- **Event replay**: Per disaster recovery
+
+### 2.6 Security & Compliance
+
+#### 2.6.1 Game Integrity
+- **RNG Certification**: Seed generation auditable
+- **Result Immutability**: Hash chain di risultati
+- **Bet Tampering Prevention**: Signature su ogni bet
+- **Time Sync**: NTP per timestamp accuracy
+
+#### 2.6.2 Financial Security
+- **Double-spend Prevention**: Lock pessimistico su wallet operations
+- **Transaction Atomicity**: All-or-nothing settlement
+- **Reconciliation**: Daily batch con RGS/Casino
+- **Audit Trail**: Immutable log di ogni transazione
+
+#### 2.6.3 Regulatory Compliance
+
+**Game Identification & Certification**:
+- **Game ID**: "RAWWAR_BR8_V1" - To be registered post-certification
+- **Game Version**: 1.0.0 - Versioning obbligatorio per tracking modifiche e re-certificazioni
+- **RTP**: 95.50% certificato da laboratorio indipendente (GLI/eCOGRA)
+- **Volatility Index**: Valori definitivi calcolati e certificati dal laboratorio indipendente. In fase di certificazione verrà allegato anche un range indicativo (es. Volatility Index 2.5–3.5/5, Hit Frequency stimato 25–30%).
+- **Hit Frequency**: Valori definitivi calcolati e certificati dal laboratorio indipendente
+- **Max Win**: Configurabile per giurisdizione (default 300x stake, massimo 3,000€)
+- **Compliance**: Designed to comply with GLI-19, subject to certification
+
+**Compliance Tracking**:
+- **Game Round ID**: UUID univoco per ogni match, formato "RAWWAR_{timestamp}_{uuid}"
+- **Geo-blocking Primary**: Responsabilità del Casino operator
+- **Geo-blocking Fail-safe**: Check lato game pre-join stanza e pre-round usando IP + headers anti-VPN
+- **Jurisdiction Management**: Whitelist/blacklist gestita da Casino, cached lato game per 5 minuti
+- **VPN Detection**: Reject automatico se VPN/proxy detected tramite IP reputation service
+- **Reality Check**: Popup obbligatorio ogni 60 minuti di gioco continuo con session stats
+- **Pre-Session Message**: Warning responsible gaming obbligatorio prima della prima bet
+- **Game History Access**: API dedicata per player per vedere ultimi 90 giorni di gioco
+- **Autoplay Prohibition**: Nessun auto-bet permesso (requisito UKGC/MGA)
+
+**Data Retention & Audit**:
+- **Game Rounds**: 90 giorni online, 5 anni archived (requisito minimo)
+- **Transaction Data**: 5 anni (requisito AML)
+- **Player Actions**: 3 anni (ogni bet, cancel, login, setting change)
+- **RNG Seeds**: 5 anni per dispute resolution
+- **Reconciliation Reports**: Daily automated con flag per discrepanze
+- **GDPR Right to be Forgotten**: Dopo periodo obbligatorio, dati personali vengono automaticamente anonimizzati tramite hash irreversibile mantenendo integrità audit trail
+
+**Reporting Obligations**:
+- **Monthly Game Performance**: RTP attuale vs certificato (max deviation 1%)
+- **Player Protection Reports**: Self-exclusions, limit breaches, reality checks triggered
+- **Big Win Alerts**: Any win >1,000€ flagged and reported automatically (UKGC requirement)
+- **Suspicious Activity**: Automated SAR filing per pattern anomali
+- **Regulatory Data Feed**: Real-time API per regolatori (dove richiesto)
+- **Game ID in All Reports**: Ogni transazione/report include Game ID per tracciabilità
+
+#### 2.6.4 GLI-19 Interactive Gaming Systems Compliance
+
+**Standard Implementation per Gaming Laboratories International**:
+
+**4.1 - Game Fairness & Random Number Generation**:
+- **RNG Architecture**: Dual-source entropy (Hardware TRNG + CSPRNG certificato)
+- **CSPRNG Algorithm**: HMAC_DRBG (NIST SP 800-90A) - NON Mersenne Twister
+- **Entropy Source**: Hardware True RNG (TRNG) certificato come fonte primaria
+- **Seeding Protocol**: 
+  ```
+  seed = HMAC-SHA256(hardware_entropy || system_time_microseconds || previous_seed_hash)
+  Re-seeding: Automatico ogni 100.000 numeri generati o 1 ora (whichever first)
+  ```
+- **Statistical Testing**: Chi-square, Kolmogorov-Smirnov, Runs Test, Serial Correlation
+- **Output Distribution**: Uniform distribution verificata su 10^8 campioni (p-value > 0.01)
+- **Audit Trail**: Ogni seed hashato e stored con timestamp per 5 anni
+
+**4.2 - Critical Game Information Display**:
+- **Mandatory Display Elements**:
+  - Game ID permanente in header: "RAWWAR_BR8_V1"
+  - RTP certificato con link a certificato: "RTP: 95.50% certificato ⓘ"
+  - Current session time con precision al secondo
+  - Current session P&L (Profit & Loss) real-time
+  - Last game round ID cliccabile per history
+  - Current server time sincronizzato NTP
+- **Help Screen Requirements**:
+  - Complete paytable con esempi visuali
+  - Odds matematiche per ogni bet type
+  - Min/Max bet limits chiari
+  - RTP: 95.50% certificato (link al certificato)
+  - Link diretto a game rules PDF certificato
+  - Provably fair verification tutorial
+
+**4.3 - Player Device Requirements**:
+- **Display Integrity**: Render identico su qualsiasi screen size ≥ 320px
+- **Connection Monitoring**: 
+  - Latency indicator (green < 100ms, yellow < 500ms, red > 500ms)
+  - Packet loss detection con warning a 1%
+  - Auto-pause su disconnessione > 3 secondi
+- **Clock Synchronization**: Client-server time drift max 1 secondo
+- **Input Validation**: Debounce 100ms su tutti i betting controls
+
+**4.4 - Game Cycle Completion & Recovery**:
+- **Incomplete Game Definition**: 
+  ```
+  IF (game_started AND !game_completed AND time_elapsed > 120s):
+    Status = INCOMPLETE
+  ```
+- **Auto-Completion Logic**:
+  - Dopo 24h: Settlement automatico basato su stored sequence
+  - Notification obbligatoria al player via email/SMS
+  - Audit entry con reason code
+- **Recovery Mechanism**:
+  - Stateful recovery da qualsiasi punto
+  - Replay disponibile per 90 giorni
+  - Hash verification di ogni stato intermedio
+
+**4.5 - Software Verification & Authentication**:
+- **Code Signing**: Tutti i binari firmati con certificato EV Code Signing
+- **Integrity Check**: SHA-256 hash di ogni componente verificato at runtime
+- **Version Control**:
+  ```
+  Format: MAJOR.MINOR.PATCH-BUILD
+  Example: 1.0.0-20240115.1234
+  Ogni version change richiede re-certificazione se MAJOR o MINOR
+  ```
+- **Tamper Detection**: Checksum verification ogni 60 secondi
+- **Secure Boot**: Chain of trust dal bootloader al game engine
+
+**4.6 - Communications Security**:
+- **Encryption Standards**:
+  - TLS 1.3 esclusivo (no downgrade)
+  - Cipher suites: TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256
+  - Perfect Forward Secrecy obbligatorio
+  - Certificate pinning su mobile apps
+- **Message Integrity**:
+  - HMAC-SHA256 su ogni messaggio
+  - Sequence numbers per anti-replay
+  - Timestamp con max drift 1 secondo
+- **Session Security**:
+  - JWT con RS256 signature
+  - Token rotation ogni 15 minuti
+  - Refresh token one-time use
+  - Secure cookie flags: HttpOnly, Secure, SameSite=Strict
+
+**4.7 - Responsible Gaming Integration**:
+- **Mandatory Limits Enforcement**:
+  - Deposit limits (daily/weekly/monthly)
+  - Loss limits (per session/day/week/month)  
+  - Session time limits con hard logout
+  - Bet frequency limits (max 1 bet/2 secondi)
+  - **Cooling-Off Period**: Periodo di attesa obbligatorio di 24 ore per l'aumento dei limiti di deposito (requisito UKGC)
+- **Reality Check Implementation**:
+  ```
+  Every 60 minutes:
+    PAUSE game
+    DISPLAY: Time played, Amount wagered, Net position
+    OPTIONS: Continue (confirm) | Exit | Set reminder
+  ```
+- **Self-Exclusion API**:
+  - Immediate upon reception from operator (<1s typical)
+  - Fallback: Block ottimistico con cache locale (TTL 5min) se evento non ricevuto entro 100ms
+  - Cross-game propagation via message bus
+  - Minimum period enforcement (24h min)
+  - No override capability - solo operator può revocare
+
+**4.8 - Game Recall Requirements**:
+- **Minimum Recall Period**: 90 giorni online, 5 anni archived
+- **Recall Data Completeness**:
+  - Complete bet details con timestamp
+  - RNG seed used (hashed)
+  - Complete elimination sequence
+  - Settlement calculations
+  - Balance changes pre/post
+- **Dispute Resolution Interface**:
+  - Secure portal per regulators
+  - Replay capability frame-by-frame
+  - Export in standard format (CSV/JSON)
+  - Cryptographic proof di non-alterazione
+
+**4.9 - Multi-State Progressive Prohibited**:
+- RAWWAR non implementa progressive jackpots
+- Fixed odds garantite per ogni bet type
+- No pool betting tra players
+- No carry-over tra matches
+
+**4.10 - Performance Requirements**:
+- **Response Times** (95th percentile):
+  - Bet placement: < 200ms
+  - Balance update: < 100ms
+  - Game state sync: < 50ms
+- **Availability**: 99.95% uptime mensile (max 22 minuti downtime)
+- **Scalability**: Support 500,000 concurrent players
+- **Recovery Time Objective (RTO)**: < 5 minuti
+- **Recovery Point Objective (RPO)**: < 1 secondo data loss
+
+### 2.7 Scalability Considerations
+
+#### 2.7.1 Horizontal Scaling
+- **Stateless design**: Ogni request indipendente
+- **Session affinity**: Non required (state in Redis)
+- **Database sharding**: Per user_id o match_id
+- **Queue partitioning**: Per match_id
+
+#### 2.7.2 Performance Optimization
+- **Batch operations**: Aggregate RGS calls
+- **Async processing**: Settlement in background
+- **Caching strategy**: Hot data in memory
+- **Connection pooling**: Database e Redis
+
+#### 2.7.3 Analisi del Throughput
+
+**Calcolo Throughput per 500k CCU**:
+
+| Momento | Stanze Attive | Players/Stanza | Bet Rate/Player | TPS Aggregato | Batching | TPS to RGS |
+|---------|--------------|----------------|-----------------|---------------|----------|------------|
+| T-60s | 200 | 2500 | 0.1/s | 50k | 50:1 | 1000 |
+| T-30s | 200 | 2500 | 0.3/s | 150k | 50:1 | 3000 |
+| T-10s | 200 | 2500 | 0.5/s | 250k | 100:1 | 2500 |
+| T-0 | 200 | 2500 | 2.0/s | 1000k | 200:1 | 5000 |
+
+**Nota**: I valori riportati saranno ulteriormente validati tramite stress test certificati e report di performance audit.
+
+**Mitigazioni**:
+- **Jitter sui close**: ±2s random per evitare spike simultanei
+- **Batching dinamico**: Aumenta con carico (max 200 tx/batch)
+- **Circuit breaker**: Fallback su queue se RGS > 8k tps
+- **Graceful degradation**: Reject nuove stanze se > 9k tps
+
+Valori validati con load test e certificazione performance.
+
+### 2.8 Monitoring & Alerting
+
+#### 2.8.1 Business Metrics
+- Bets per minute
+- Settlement success rate
+- Average bet amount
+- Player concurrency
+
+#### 2.8.2 Technical Metrics
+- API latency (p50, p95, p99)
+- Database query time
+- Queue depth
+- Error rates by type
+
+#### 2.8.3 Alerts
+- Settlement failures > 1%
+- RGS timeout > 5%
+- Bet validation errors spike
+- Match generation failure
+
+### 2.9 Error Recovery & Incomplete Game Resolution
+
+#### 2.9.1 Principio Fondamentale: Roulette-Style Settlement
+
+RAWWAR adotta il modello **"Show First, Settle Later"** tipico della roulette:
+
+**Flusso Normale**:
+1. Betting phase → Bets locked
+2. Playing phase → Eliminazioni mostrate
+3. Results display → Winner rivelato
+4. Settlement → Credit/Debit eseguiti
+
+**Flusso con Errore**:
+1. Betting phase → Bets locked
+2. Playing phase → Eliminazioni mostrate
+3. Results display → Winner rivelato
+4. Settlement → **FAILURE**
+5. Recovery → Rollback atomico di tutte le transazioni
+
+#### 2.9.2 Gestione Errori Durante Match Lifecycle
+
+**Scenario 1: RGS Timeout Durante Bet Validation**
+- **Detection**: RGS non risponde entro 5 secondi
+- **Immediate Action**: 
+  - Block del match corrente
+  - Messaggio errore: "Sistema temporaneamente non disponibile"
+  - Tutte le bet in pending vengono marcate FAILED
+- **Recovery**: 
+  - Nessun debit eseguito
+  - Match viene cancellato (void)
+  - Nuovo match schedulato dopo recovery
+- **Player Communication**: "Scommesse annullate per problema tecnico"
+
+**Scenario 2: Video Streaming Failure Durante Playing**
+- **Detection**: CDN non risponde o video corrotto
+- **Immediate Action**: 
+  - Il match CONTINUA server-side
+  - Backend ha già la sequence, procede con timing
+- **Recovery**:
+  - Fallback a visualizzazione testuale dei risultati
+  - Elimination order mostrato come lista
+  - Winner comunque rivelato
+- **Settlement**: Procede normalmente - il risultato è valido
+
+**Scenario 3: Backend Crash Durante Settlement**
+- **Detection**: Settlement job non completato entro 30 secondi
+- **State Preservation**:
+  ```
+  Transaction Log (persistent):
+  - Match ID
+  - All bets to settle
+  - Partial settlements completed
+  - Idempotency keys used
+  ```
+- **Recovery al Restart**:
+  1. Recupera transaction log
+  2. Identifica settlements incompleti
+  3. Riprende da dove interrotto (idempotent)
+  4. Completa tutti i credit
+- **Double-Payment Prevention**: Idempotency key su ogni transazione
+
+**Scenario 4: Mass Disconnection Durante Playing**
+- **Detection**: >50% WebSocket drop in 1 secondo
+- **Server-Side Continuation**:
+  - Match procede normalmente lato server
+  - Risultati salvati in database
+  - State disponibile per reconnection
+- **Client Recovery**:
+  - Al reconnect: fast-forward al punto corrente
+  - Se match finito: mostra direttamente results
+  - Settlement procede indipendentemente dalla connessione
+
+#### 2.9.3 Incomplete Game Resolution (24h Rule)
+
+**Definizione di Incomplete Game**:
+- Bet accettate ma match mai iniziato
+- Match iniziato ma mai completato  
+- Settlement iniziato ma mai finalizzato
+
+**Policy Differenziata per Giurisdizione**:
+
+| Scenario | MGA/Malta | UKGC/UK | Curacao | Default |
+|----------|-----------|---------|---------|---------|
+| Match mai iniziato | VOID con refund | VOID con refund | VOID con refund | VOID con refund |
+| Crash pre-elimination | VOID tutti | VOID tutti | VOID tutti | VOID tutti |
+| Crash a metà (3/7 elim) | VOID tutti | VOID tutti | VOID tutti | VOID tutti |
+| Crash post-elimination completa | Settle completo | Settle completo | Settle completo | Settle completo |
+| Settlement failed | Retry 24h poi manual | Retry 1h poi escalate | Retry 24h | Retry 24h poi manual |
+
+**Auto-Resolution Logic**:
+```
+IF (match.created_at < NOW - 24h AND match.status != 'COMPLETED'):
+  IF (match.eliminations_shown >= 7):
+    Complete settlement with full sequence
+  ELSE:
+    Void all bets with full refund
+```
+
+**Audit Requirements**:
+- Log immutabile di ogni auto-resolution con reason code
+- Notification obbligatoria al player entro 1h
+- Report batch giornaliero al regolatore per jurisdiction
+- Retention 7 anni per dispute resolution
+
+#### 2.9.4 Transaction Atomicity & Rollback
+
+**Principio ACID per Settlement**:
+- **Atomicity**: O tutti i pagamenti o nessuno
+- **Consistency**: Balance sempre coerenti
+- **Isolation**: Nessun read durante settlement
+- **Durability**: Write su database prima di RGS call
+
+**Rollback Procedure**:
+1. **Initiate Rollback**: Se ANY settlement fallisce
+2. **Reverse Operations**: 
+   - Per ogni CREDIT eseguito → DEBIT compensativo
+   - Per ogni DEBIT eseguito → CREDIT compensativo
+3. **Mark Match**: Status = SETTLEMENT_FAILED
+4. **Manual Intervention**: Alert a operations team
+5. **Player Notification**: "Vincite in elaborazione"
+
+#### 2.9.5 RGS Communication Failure Matrix
+
+| Failure Point | Detection | Action | Recovery | Player Impact |
+|--------------|-----------|---------|----------|---------------|
+| Pre-bet validation | 5s timeout | Block match | Cancel all | "Servizio non disponibile" |
+| Post-bet confirmation | 5s timeout | Continue match | Retry in background | Nessuno - bet già validate |
+| During settlement | 10s timeout | Retry con backoff | Max 5 retry poi manual | "Pagamento in elaborazione" |
+| Session validation | 3s timeout | Use cached session | Revalidate async | Nessuno se cache valid |
+
+#### 2.9.6 Data Consistency Guarantees
+
+**Write-Ahead Logging**:
+- Ogni operazione scritta nel log PRIMA dell'esecuzione
+- Log immutabile e append-only
+- Usato per recovery e audit
+
+**Event Sourcing per Match State**:
+```
+Events in order:
+1. MatchCreated
+2. BettingOpened
+3. BetPlaced (multiple)
+4. BettingClosed
+5. SequenceGenerated
+6. EliminationOccurred (×7)
+7. WinnerDeclared
+8. SettlementInitiated
+9. SettlementCompleted OR SettlementFailed
+```
+
+**State Reconstruction**:
+- Replay events per ricostruire stato esatto
+- Nessuna perdita di dati anche con crash multipli
+
+---
+
+## 3. RGS SERVICE - Remote Gaming Server Specification
+
+### 3.1 Core Purpose
+
+L'RGS è il ponte standardizzato tra il Game Backend RAWWAR e il mondo dei Casino/Operatori. NON gestisce wallet reali ma orchestra le transazioni, mantiene le sessioni di gioco e garantisce la compliance.
+
+### 3.2 Session Management
+
+#### 3.2.1 Session Lifecycle
+L'RGS gestisce il ciclo di vita completo delle sessioni di gioco:
+
+**Session Creation**:
+- Triggered da player login nel casino
+- Validazione credenziali con Casino
+- Generazione session token univoco
+- Recupero player limits e balance
+- Setting timeout (default 30 min)
+
+**Session Validation**:
+- Check su ogni game action
+- Verifica token non expired
+- Verifica player non self-excluded
+- Check concurrent session limits
+
+**Session Termination**:
+- Explicit logout
+- Timeout per inattività
+- Force close da Casino (limits reached)
+- Emergency stop (regulatory requirement)
+
+#### 3.2.2 Session Data Model
+Ogni sessione persistente mantiene:
+- Player identification
+- Casino/Operator ID
+- Game ID (RAWWAR)
+- Currency
+- Jurisdiction
+- Limits (deposit, loss, time)
+- Current balance (cached)
+- Session start/last activity
+- Game rounds played
+
+### 3.3 Transaction Management
+
+#### 3.3.1 Wallet Integration Modes
+
+**SEAMLESS WALLET** (Default):
+Ogni transazione tocca direttamente il wallet principale:
+```
+Game → RGS: "Debit 50€"
+RGS → Casino: "Debit main wallet"
+Casino → RGS: "New balance 950€"
+RGS → Game: "Transaction approved"
+```
+
+**SEGREGATED WALLET** (Legacy support):
+Transfer iniziale al game wallet:
+```
+Session Start:
+  RGS → Casino: "Transfer 200€ to game wallet"
+  [Gioco con budget isolato]
+Session End:
+  RGS → Casino: "Return 150€ to main wallet"
+```
+
+#### 3.3.2 Transaction Types
+
+**DEBIT (Bet Placement)**:
+- Validazione importo
+- Check fondi disponibili
+- Check betting limits
+- Reserve o immediate debit
+- Transaction ID generation
+
+**CREDIT (Winnings)**:
+- Validazione win amount
+- Anti-fraud checks
+- Immediate credit
+- Update running totals
+
+**CANCEL (Bet Cancellation)**:
+- Validazione cancellabile
+- Reverse transaction
+- Restore balance
+
+**REFUND (Technical Issues)**:
+- Full refund di bet
+- Audit log speciale
+- Notification a compliance
+
+#### 3.3.3 Transaction Integrity
+
+**Idempotency**:
+- Ogni transazione ha unique ID
+- Replay protection 48h
+- Same response per retry
+
+**Atomicity**:
+- Two-phase commit dove possibile
+- Compensation per rollback
+- Never lose money in limbo
+
+**Reconciliation**:
+- Real-time balance sync
+- Batch reconciliation ogni ora
+- Daily settlement reports
+
+### 3.4 Game Round Management
+
+#### 3.4.1 Round Lifecycle
+Ogni match RAWWAR è un "Game Round" per l'RGS:
+
+**Round Start**:
+- Create round ID
+- Link to session
+- Set round parameters
+- Initialize round state
+
+**During Round**:
+- Track all bets
+- Monitor spending
+- Update round totals
+- Log all events
+
+**Round End**:
+- Calculate final P&L
+- Trigger settlements
+- Update statistics
+- Archive round data
+
+#### 3.4.2 Round Data
+- Round ID (unique)
+- Game ID (RAWWAR)
+- Start/End timestamps
+- Total wagered
+- Total won
+- Number of bets
+- Final balance delta
+
+### 3.5 Compliance & Regulatory
+
+#### 3.5.1 Responsible Gaming
+L'RGS enforced limits imposti dal Casino:
+
+**Deposit Limits**:
+- Daily/Weekly/Monthly
+- Check before bet
+- Block if exceeded
+
+**Loss Limits**:
+- Track running losses
+- Prevent bet if would exceed
+- Force session end if reached
+
+**Time Limits**:
+- Session duration
+- Daily play time
+- Mandatory breaks
+
+**Self-Exclusion**:
+- Immediate block
+- No override possible
+- Audit trail
+
+#### 3.5.2 Anti-Money Laundering (AML)
+- Track unusual patterns
+- Flag large transactions
+- Report suspicious activity
+- Maintain transaction history
+
+#### 3.5.3 Data Protection
+- Encrypt sensitive data
+- GDPR compliance
+- Right to erasure support
+- Data portability
+
+### 3.6 Integration Protocols
+
+#### 3.6.1 Backend RAWWAR Integration
+
+**Inbound API** (Game → RGS):
+- `POST /session/validate`
+- `POST /transaction/debit`
+- `POST /transaction/credit`
+- `POST /round/start`
+- `POST /round/end`
+
+**Callbacks** (RGS → Game):
+- Session expired
+- Limit reached
+- Emergency stop
+- Balance updated
+
+#### 3.6.2 Casino Integration
+
+**Outbound API** (RGS → Casino):
+- Authenticate player
+- Get balance
+- Debit/Credit wallet
+- Check limits
+- Report round
+
+**Webhooks** (Casino → RGS):
+- Balance changed
+- Limit updated
+- Player excluded
+- Session force-close
+
+### 3.7 Error Handling & Recovery
+
+#### 3.7.1 Error Categories
+
+**Player Errors**:
+- INSUFFICIENT_FUNDS
+- LIMIT_EXCEEDED  
+- SESSION_EXPIRED
+- PLAYER_EXCLUDED
+
+**System Errors**:
+- CASINO_UNAVAILABLE
+- TIMEOUT
+- INVALID_RESPONSE
+- NETWORK_ERROR
+
+**Security Errors**:
+- INVALID_TOKEN
+- SIGNATURE_MISMATCH
+- REPLAY_ATTACK
+- UNAUTHORIZED
+
+#### 3.7.2 Recovery Strategies
+
+**Retry Logic**:
+- Exponential backoff
+- Max 3 attempts
+- Circuit breaker pattern
+
+**Fallback**:
+- Cache last balance
+- Queue transactions
+- Degraded mode operation
+
+**Compensation**:
+- Reverse transactions
+- Issue refunds
+- Manual reconciliation
+
+### 3.8 Performance Requirements
+
+#### 3.8.1 Latency SLAs
+- Session validation: < 50ms
+- Balance check: < 100ms  
+- Debit/Credit: < 200ms
+- Round creation: < 100ms
+
+#### 3.8.2 Throughput
+- 10,000 transactions/second
+- 50,000 concurrent sessions
+- 1,000 rounds/second
+
+#### 3.8.3 Availability
+- 99.95% uptime
+- Zero data loss
+- < 5 min recovery time
+
+### 3.9 Mock RGS Implementation
+
+Per Pre-Production, il Mock RGS deve simulare realisticamente:
+
+#### 3.9.1 Realistic Behaviors
+- **Latency**: 50-200ms variable
+- **Failures**: 0.1-0.5% transaction failures (production realistic)
+- **Timeouts**: 0.1% timeout rate
+- **Limits**: Enforce realistic limits
+
+#### 3.9.2 Test Scenarios
+- Insufficient funds
+- Session timeout during play
+- Limit exceeded mid-game
+- Network interruption
+- Casino maintenance mode
+
+#### 3.9.3 Data Generation
+- 1000 test players
+- Varied balance ranges
+- Different limit profiles
+- Multiple currencies
+
+---
+
+## 4. CASINO SERVICE - Operator System Specification
+
+### 4.1 Core Purpose
+
+Il Casino Service rappresenta l'operatore reale (Bet365, 888, PokerStars etc.) che detiene i fondi reali dei giocatori, gestisce KYC/AML, e mantiene la compliance regulatoria. Nel vostro caso sarà un MOCK ma deve comportarsi esattamente come un vero operatore.
+
+### 4.2 Player Account Management
+
+#### 4.2.1 Player Registration & KYC
+Ogni player nel sistema casino ha:
+
+**Identity Verification**:
+- Full name, DOB, Address
+- Document verification (ID, Passport)
+- Proof of address
+- Source of funds (per high rollers)
+
+**KYC Levels**:
+- Level 0: Unverified (no play)
+- Level 1: Basic verified (low limits)
+- Level 2: Enhanced verified (medium limits)
+- Level 3: Full verified (high limits)
+
+**Account Status**:
+- PENDING_VERIFICATION
+- ACTIVE
+- SUSPENDED
+- SELF_EXCLUDED
+- BANNED
+- DORMANT
+
+#### 4.2.2 Player Profile Data
+- Account ID (unique)
+- Personal details
+- Contact information
+- Preferred currency
+- Jurisdiction
+- Marketing preferences
+- Responsible gaming settings
+- VIP tier
+
+### 4.3 Wallet Management
+
+#### 4.3.1 Wallet Structure
+Il Casino mantiene il wallet REALE con denaro vero:
+
+**Main Wallet**:
+- Real money balance
+- Currency (EUR, USD, GBP, etc.)
+- Pending withdrawals
+- Locked funds (active bets)
+
+**Bonus Wallet** (separato):
+- Bonus balance
+- Wagering requirements
+- Expiry date
+- Conversion rules
+
+**Transaction Ledger**:
+- Every debit/credit
+- Running balance
+- Transaction type
+- Reference (game round, deposit, etc.)
+- Timestamp
+
+#### 4.3.2 Transaction Types
+
+**DEPOSIT** (Player → Casino):
+- Credit card / Bank transfer / E-wallet / Crypto
+- Instant or delayed clearing
+- Fees handling
+- Bonus triggering
+
+**WITHDRAWAL** (Casino → Player):
+- Pending period (24-72h)
+- Verification requirements
+- Fee deduction
+- Method restrictions
+
+**GAME DEBIT** (For betting):
+- Lock funds
+- Reduce balance
+- Update available balance
+- Log game reference
+
+**GAME CREDIT** (Winnings):
+- Add to balance
+- Update statistics
+- Trigger big win alerts
+- Check for bonus conversion
+
+### 4.4 Responsible Gaming & Limits
+
+#### 4.4.1 Deposit Limits
+Enforced at multiple levels:
+- Daily deposit limit
+- Weekly deposit limit  
+- Monthly deposit limit
+- Increase requires cooling period
+
+#### 4.4.2 Loss Limits
+Track and enforce:
+- Daily loss limit
+- Weekly loss limit
+- Monthly loss limit
+- Alert before reaching
+
+#### 4.4.3 Time Limits
+- Session duration limits
+- Daily playtime limits
+- Mandatory break reminders
+- Reality checks (time played popup)
+
+#### 4.4.4 Self-Exclusion
+- Temporary (24h, 7d, 30d)
+- Permanent
+- Immediate effect
+- Cannot be reversed easily
+- Shared across operator network
+
+### 4.5 Compliance & Regulatory
+
+#### 4.5.1 Anti-Money Laundering (AML)
+
+**Transaction Monitoring**:
+- Large deposits flagged
+- Unusual patterns detected
+- Velocity checks (frequency)
+- Cross-reference with PEP lists
+
+**Suspicious Activity Reporting**:
+- Automatic flags
+- Manual review queue
+- SAR filing with authorities
+- Account freeze capability
+
+**Enhanced Due Diligence**:
+- For high-risk players
+- Source of wealth verification
+- Ongoing monitoring
+- Regular reviews
+
+#### 4.5.2 Data Retention
+- Transaction history: 5 years
+- Player data: 7 years post-closure
+- Game rounds: 90 days minimum
+- Communications: 1 year
+
+#### 4.5.3 Reporting Obligations
+- Daily transaction reports
+- Monthly player reports
+- Quarterly compliance reports
+- Annual audit submissions
+
+### 4.6 Integration Points
+
+#### 4.6.1 With RGS
+
+**Inbound Requests** (RGS → Casino):
+- Authenticate player
+- Get current balance
+- Debit amount (bet)
+- Credit amount (win)
+- Check player status
+- Get player limits
+
+**Responses Include**:
+- Success/Failure status
+- New balance
+- Transaction ID
+- Error codes if failed
+- Additional flags (limits near)
+
+#### 4.6.2 With Payment Providers
+- Process deposits
+- Process withdrawals
+- Handle chargebacks
+- Fraud detection
+
+#### 4.6.3 With Regulatory Bodies
+- Real-time reporting APIs
+- Audit access
+- Compliance submissions
+- Alert notifications
+
+### 4.7 Mock Casino Implementation Details
+
+#### 4.7.1 Test Data Setup
+
+**1000 Test Players**:
+```
+Distribution:
+- 70% Regular players (100-1000€ balance)
+- 20% Low rollers (10-100€ balance)  
+- 8% High rollers (1000-10000€ balance)
+- 2% VIP (10000€+ balance)
+
+Status:
+- 90% Active
+- 5% Self-excluded
+- 3% Pending verification
+- 2% Dormant
+```
+
+#### 4.7.2 Realistic Behaviors
+
+**Balance Management**:
+- Start with realistic balances
+- Decrease over time (house edge)
+- Occasional "deposits" (balance top-ups)
+- Some accounts go to zero
+
+**Transaction Delays**:
+- 95% instant (< 100ms)
+- 4% slow (100-500ms)
+- 1% very slow (500-2000ms)
+
+**Failure Scenarios**:
+- 0.3% Insufficient funds
+- 0.1% Account suspended
+- 0.05% Limit exceeded
+- 0.05% Technical error
+
+#### 4.7.3 Limit Profiles
+
+**Conservative** (30% of players):
+- Daily deposit: 50€
+- Daily loss: 30€
+- Session: 2 hours
+
+**Moderate** (50% of players):
+- Daily deposit: 200€
+- Daily loss: 100€
+- Session: 4 hours
+
+**Liberal** (18% of players):
+- Daily deposit: 1000€
+- Daily loss: 500€
+- Session: 8 hours
+
+**VIP** (2% of players):
+- Daily deposit: 10000€
+- Daily loss: 5000€
+- No session limit
+
+### 4.8 Security Measures
+
+#### 4.8.1 Authentication
+- Multi-factor authentication
+- Device fingerprinting
+- IP geolocation checks
+- Session management
+
+#### 4.8.2 Fraud Prevention
+- Transaction velocity checks
+- Pattern recognition
+- Blacklist checking
+- Manual review triggers
+
+#### 4.8.3 Data Protection
+- Encryption at rest
+- Encryption in transit
+- PCI DSS compliance
+- GDPR compliance
+
+### 4.9 Operational Processes
+
+#### 4.9.1 24/7 Monitoring
+- Transaction monitoring
+- System health
+- Fraud alerts
+- Player complaints
+
+#### 4.9.2 Customer Support
+- Account issues
+- Payment problems
+- Responsible gaming
+- Technical support
+
+#### 4.9.3 Risk Management
+- Player categorization
+- Limit adjustments
+- Bonus abuse detection
+- Collusion detection
+
+---
+
+## 5. FAILURE POINTS ANALYSIS - Complete System Risk Assessment
+
+### 5.1 Frontend Failure Points
+
+#### 5.1.1 Network Connectivity Failures
+
+**WebSocket Disconnection During Betting**:
+- **Impact**: Player cannot place/modify bets
+- **Detection**: Connection state monitoring
+- **Mitigation**: Queue actions locally, retry on reconnect
+- **Recovery**: Sync state on reconnection, show what was missed
+
+**Video Loading Failure**:
+- **Impact**: Player misses elimination visuals
+- **Detection**: Video onerror event
+- **Mitigation**: Preload during betting, multiple CDN endpoints
+- **Recovery**: Skip to next video, show text result
+
+**API Request Timeout**:
+- **Impact**: Bet confirmation unknown
+- **Detection**: Request timeout (5s)
+- **Mitigation**: Idempotency key prevents double-bet
+- **Recovery**: Auto-retry with exponential backoff
+
+#### 5.1.2 State Synchronization Failures
+
+**Clock Drift**:
+- **Impact**: Timer mismatch with server
+- **Detection**: Compare server time in messages
+- **Mitigation**: Periodic time sync
+- **Recovery**: Adjust local timer to server time
+
+**Missed Events During Disconnect**:
+- **Impact**: Game state inconsistent
+- **Detection**: Gap in event sequence numbers
+- **Mitigation**: Request full state on reconnect
+- **Recovery**: Rebuild UI from authoritative state
+
+**Browser Crash/Refresh**:
+- **Impact**: Loss of local state
+- **Detection**: Page load with existing session
+- **Mitigation**: Save critical state to sessionStorage
+- **Recovery**: Restore from storage + server sync
+
+### 5.2 Backend Failure Points
+
+#### 5.2.1 Critical Process Failures
+
+**Match Generation Failure**:
+- **Impact**: No new match, game stops
+- **Detection**: Scheduled job monitoring
+- **Mitigation**: Multiple scheduler instances
+- **Recovery**: Manual trigger, alert ops team
+- **Prevention**: Redundant schedulers with leader election
+
+**Sequence Generation Corruption**:
+- **Impact**: Invalid/unfair game result
+- **Detection**: Sequence validation checks
+- **Mitigation**: Regenerate with new seed
+- **Recovery**: Cancel match, refund all bets
+- **Prevention**: Multiple validation layers
+
+**Settlement Calculation Error**:
+- **Impact**: Wrong payouts
+- **Detection**: Reconciliation checks
+- **Mitigation**: Dual calculation verification
+- **Recovery**: Compensating transactions
+- **Prevention**: Comprehensive test coverage
+
+#### 5.2.2 Data Consistency Failures
+
+**Database Transaction Failure**:
+- **Impact**: Partial state update
+- **Detection**: Transaction rollback
+- **Mitigation**: Retry with backoff
+- **Recovery**: Compensating transaction
+- **Prevention**: Proper transaction boundaries
+
+**Cache-Database Desync**:
+- **Impact**: Stale data served
+- **Detection**: Version mismatch
+- **Mitigation**: Cache TTL, invalidation on write
+- **Recovery**: Force cache refresh
+- **Prevention**: Write-through cache pattern
+
+**Event Publishing Failure**:
+- **Impact**: Frontend not updated
+- **Detection**: Outbox pattern monitoring
+- **Mitigation**: Persistent outbox queue
+- **Recovery**: Retry from outbox
+- **Prevention**: Transactional outbox
+
+### 5.3 RGS Integration Failure Points
+
+#### 5.3.1 Transaction Failures
+
+**Debit Failure After Bet Accepted**:
+- **Impact**: Bet placed without payment
+- **Detection**: RGS error response
+- **Mitigation**: Two-phase commit
+- **Recovery**: Cancel bet, notify player
+- **Prevention**: Reserve funds before confirming
+
+**Credit Failure for Winnings**:
+- **Impact**: Player not paid
+- **Detection**: RGS error on credit
+- **Mitigation**: Retry queue with exponential backoff
+- **Recovery**: Manual intervention if persistent
+- **Prevention**: Idempotent credit operations
+
+**Timeout During Transaction**:
+- **Impact**: Unknown transaction state
+- **Detection**: Request timeout
+- **Mitigation**: Query transaction status
+- **Recovery**: Reconciliation process
+- **Prevention**: Aggressive timeouts with retry
+
+#### 5.3.2 Session Failures
+
+**Session Expiry During Game**:
+- **Impact**: Cannot complete bet/settlement
+- **Detection**: 401 from RGS
+- **Mitigation**: Preemptive refresh
+- **Recovery**: Re-authenticate, replay transaction
+- **Prevention**: Refresh 5 min before expiry
+
+**Invalid Session State**:
+- **Impact**: All operations fail
+- **Detection**: Consistent RGS errors
+- **Mitigation**: Force new session
+- **Recovery**: Player re-login
+- **Prevention**: Session health checks
+
+### 5.4 Casino Service Failure Points
+
+#### 5.4.1 Wallet Operation Failures
+
+**Insufficient Funds Not Detected**:
+- **Impact**: Negative balance
+- **Detection**: Post-transaction audit
+- **Mitigation**: Double-check before debit
+- **Recovery**: Compensating credit
+- **Prevention**: Pessimistic balance lock
+
+**Double Spend**:
+- **Impact**: Player balance corrupted
+- **Detection**: Reconciliation
+- **Mitigation**: Idempotency enforcement
+- **Recovery**: Manual correction
+- **Prevention**: Unique transaction IDs
+
+#### 5.4.2 Compliance Failures
+
+**Limit Exceeded Not Enforced**:
+- **Impact**: Regulatory violation
+- **Detection**: Daily audit
+- **Mitigation**: Real-time limit checking
+- **Recovery**: Refund excess, report incident
+- **Prevention**: Multiple limit check layers
+
+**Self-Excluded Player Plays**:
+- **Impact**: Serious regulatory breach
+- **Detection**: Post-play audit
+- **Mitigation**: Real-time exclusion check
+- **Recovery**: Void all bets, refund, report
+- **Prevention**: Check at session creation
+
+### 5.5 System-Wide Failure Scenarios
+
+#### 5.5.1 Cascading Failures
+
+**Database Overload**:
+- **Trigger**: Spike in traffic
+- **Impact**: All services degraded
+- **Detection**: Latency monitoring
+- **Mitigation**: Connection pooling, read replicas
+- **Recovery**: Circuit breaker, graceful degradation
+- **Prevention**: Load testing, capacity planning
+
+**Message Queue Backup**:
+- **Trigger**: Slow consumer
+- **Impact**: Delayed updates, memory pressure
+- **Detection**: Queue depth monitoring
+- **Mitigation**: Additional consumers, backpressure
+- **Recovery**: Drain queue, skip non-critical
+- **Prevention**: Auto-scaling consumers
+
+#### 5.5.2 Security Failures
+
+**DDoS Attack**:
+- **Impact**: Service unavailable
+- **Detection**: Traffic anomaly
+- **Mitigation**: CDN, rate limiting
+- **Recovery**: Traffic filtering
+- **Prevention**: CloudFlare, AWS Shield
+
+**Data Breach**:
+- **Impact**: Player data exposed
+- **Detection**: Intrusion detection
+- **Mitigation**: Encryption, access control
+- **Recovery**: Incident response plan
+- **Prevention**: Security audits, penetration testing
+
+### 5.6 Recovery Priority Matrix
+
+| Failure Type | Severity | Max Recovery Time | Escalation |
+|-------------|----------|-------------------|------------|
+| Settlement Error | CRITICAL | 5 min | Immediate |
+| Payment Failure | CRITICAL | 10 min | Immediate |
+| Match Generation | HIGH | 15 min | After 2 attempts |
+| WebSocket Down | HIGH | 10 min | After 5 min |
+| Video Loading | MEDIUM | No limit | No escalation |
+| Cache Desync | LOW | 30 min | If recurring |
+
+### 5.7 Monitoring & Alerting Strategy
+
+#### 5.7.1 Real-Time Alerts
+- Settlement failures > 3 in 5 min
+- RGS timeout rate > 5%
+- WebSocket connections drop > 10%
+- Database latency > 500ms p95
+- Queue depth > 10,000 messages
+
+#### 5.7.2 Periodic Health Checks
+- Reconciliation every hour
+- Limit enforcement audit daily
+- Session cleanup every 6 hours
+- Cache consistency check hourly
+- Certificate expiry check daily
+
+---
+
+## 6. CASINO SECURITY STANDARDS - Complete Security Framework
+
+### 6.1 Data Security Standards
+
+#### 6.1.1 Encryption Requirements
+
+**Data at Rest**:
+- Database: AES-256 encryption
+- File storage: Encrypted volumes
+- Backups: Encrypted before storage
+- Keys: Stored in Hardware Security Module (HSM)
+
+**Data in Transit**:
+- TLS 1.3 minimum for all connections
+- Perfect Forward Secrecy enabled
+- HSTS headers with preload
+
+**Sensitive Data Handling**:
+- PCI DSS compliance for payment data
+- Never log: Passwords, CVV, Full card numbers
+- Tokenization for card details
+- Secure deletion after retention period
+
+#### 6.1.2 Access Control
+
+**Authentication**:
+- Multi-factor authentication for admin
+- OAuth 2.0 / OIDC for players
+- Session tokens with secure generation
+- Password policy: 12+ chars, complexity rules
+
+**Authorization**:
+- Role-Based Access Control (RBAC)
+- Principle of least privilege
+- API key rotation every 90 days
+- Audit log for all admin actions
+
+### 6.2 Game Integrity Standards
+
+#### 6.2.1 Random Number Generation
+
+**RNG Requirements**:
+- Cryptographically secure RNG
+- External seed from certified source
+- Unpredictable and non-reproducible
+- Regular statistical testing
+
+**Fairness Verification**:
+- Provably fair algorithm
+- Public seed revelation post-game
+- Hash chain for result verification
+- Third-party RNG certification
+
+#### 6.2.2 Result Integrity
+
+**Tamper Prevention**:
+- Digital signatures on results
+- Immutable audit trail
+- Hash chain of game rounds
+- Timestamp from trusted source
+
+**Dispute Resolution**:
+- Complete game replay capability
+- Cryptographic proof of results
+- Player bet confirmation records
+- 90-day minimum retention
+
+### 6.3 Financial Security Standards
+
+#### 6.3.1 Transaction Security
+
+**Payment Processing**:
+- PCI DSS Level 1 compliance
+- Tokenization of payment methods
+- 3D Secure for card payments
+- Velocity checks on transactions
+
+**Anti-Fraud Measures**:
+- Machine learning fraud detection
+- Behavioral analysis
+- Device fingerprinting
+- Geolocation verification
+
+#### 6.3.2 Anti-Money Laundering (AML)
+
+**Know Your Customer (KYC)**:
+- Identity verification required
+- Document authenticity checks
+- Address verification
+- Source of funds for large amounts
+
+**Transaction Monitoring**:
+- Suspicious pattern detection
+- Large transaction reporting
+- Politically Exposed Person (PEP) screening
+- Sanctions list checking
+
+### 6.4 Platform Security Standards
+
+#### 6.4.1 Infrastructure Security
+
+**Network Security**:
+- Web Application Firewall (WAF)
+- DDoS protection
+- Intrusion Detection System (IDS)
+- Network segmentation
+
+**Server Security**:
+- Regular security patching
+- Hardened OS configuration
+- File integrity monitoring
+- Centralized logging
+
+#### 6.4.2 Application Security
+
+**Secure Development**:
+- OWASP Top 10 compliance
+- Security code reviews
+- Static analysis (SAST)
+- Dynamic analysis (DAST)
+
+**Input Validation**:
+- Parameterized queries (SQL injection)
+- Output encoding (XSS prevention)
+- File upload restrictions
+- Rate limiting on all endpoints
+
+### 6.5 Compliance & Regulatory Standards
+
+#### 6.5.1 Licensing Requirements
+
+**Regulatory Compliance**:
+- Malta Gaming Authority (MGA) standards
+- UK Gambling Commission requirements
+- Individual country regulations
+- Regular compliance audits
+
+**Technical Standards**:
+- GLI-19 for online gaming systems
+- ISO/IEC 27001 for security
+- eCOGRA certification
+- TST verification
+
+#### 6.5.2 Responsible Gaming
+
+**Player Protection**:
+- Mandatory reality checks
+- Self-exclusion options
+- Deposit/loss/time limits
+- Cool-off periods
+
+**Age Verification**:
+- 18+ verification required
+- Third-party age verification
+- Regular re-verification
+- Marketing restrictions
+
+### 6.6 Audit & Monitoring Standards
+
+#### 6.6.1 Audit Logging
+
+**What to Log**:
+- All financial transactions
+- Login/logout events
+- Bet placement/cancellation
+- Administrative actions
+- Security events
+- System errors
+
+**Log Requirements**:
+- Tamper-proof storage
+- Timestamp accuracy (NTP sync)
+- Correlation IDs
+- 5-year retention
+- Encrypted storage
+- Regular backup
+
+#### 6.6.2 Real-Time Monitoring
+
+**Security Monitoring**:
+- Failed login attempts
+- Unusual betting patterns
+- Large transactions
+- Account takeover attempts
+- API abuse
+
+**Performance Monitoring**:
+- Transaction success rates
+- System latency
+- Error rates
+- Resource utilization
+- Player concurrency
+
+### 6.7 Incident Response Standards
+
+#### 6.7.1 Incident Classification
+
+**Severity Levels**:
+- P1 Critical: Data breach, payment system down
+- P2 High: Authentication failure, RNG compromise
+- P3 Medium: Performance degradation
+- P4 Low: Minor bugs, UI issues
+
+#### 6.7.2 Response Procedures
+
+**Immediate Response**:
+- Isolate affected systems
+- Preserve evidence
+- Notify security team
+- Begin investigation
+
+**Communication**:
+- Player notification if affected
+- Regulatory reporting (within 72h for GDPR)
+- Internal stakeholder updates
+- Public disclosure if required
+
+### 6.8 Testing & Validation Standards
+
+#### 6.8.1 Security Testing
+
+**Regular Testing**:
+- Penetration testing (quarterly)
+- Vulnerability scanning (weekly)
+- Security code review (per release)
+- Third-party audits (annual)
+
+**Game Testing**:
+- RNG statistical analysis
+- Payout verification
+- Load testing
+- Failover testing
+
+#### 6.8.2 Compliance Validation
+
+**Regular Audits**:
+- Financial audit (annual)
+- Security audit (annual)
+- Compliance audit (quarterly)
+- RNG certification (annual)
+
+### 6.9 Data Protection Standards
+
+#### 6.9.1 Privacy Requirements
+
+**GDPR Compliance**:
+- Privacy by design
+- Data minimization
+- Purpose limitation
+- Right to erasure
+- Data portability
+
+**Data Handling**:
+- Consent management
+- Privacy policy
+- Cookie compliance
+- Third-party data sharing controls
+
+#### 6.9.2 Retention Policies
+
+**Retention Periods**:
+- Transaction data: 5 years
+- Game rounds: 90 days minimum
+- Player data: 7 years after closure
+- Logs: 1-5 years based on type
+
+---
+
+## 7. FUTURE EVOLUTIONS - Roadmap for Growth
+
+### 7.1 New Betting Types
+
+#### 7.1.1 Advanced Position Bets
+
+**Range Bets**:
+- "Player X finishes between 3rd-5th" 
+- "Player X in bottom half"
+- "Player X in top half"
+- Dynamic odds based on range width
+
+**Head-to-Head**:
+- "Player X outlasts Player Y"
+- "Player X eliminates before Player Y"
+- Side betting market creation
+
+**Combination Bets**:
+- "Player X wins AND Player Y first out"
+- "Top 3 contains X, Y, Z in any order"
+- Accumulator multipliers
+
+#### 7.1.2 Alternative Betting Features
+
+**IMPORTANT**: Live/In-Play betting durante il match è INCOMPATIBILE con l'architettura che pre-determina l'intera sequenza per garantire provable fairness. Le seguenti sono alternative compatibili:
+
+**Inter-Match Features**:
+- Scommesse su performance cumulative tra match
+- Tournament brackets e classifiche
+- Daily/Weekly challenges con premi
+- Streak bonuses (vincite consecutive)
+
+**Quick Bets** (con conferma esplicita):
+- One-click favorite combinations CON CONFERMA
+- "Same as last round" CON CONFERMA
+- Pre-set betting templates CON CONFERMA
+- NO auto-bet (vietato per compliance)
+
+### 7.2 New Game Modes
+
+#### 7.2.1 Tournament Mode
+
+**Multi-Round Tournaments**:
+- Best of 5 rounds scoring
+- Elimination tournaments
+- League-style standings
+- Championship events
+
+**Buy-In Tournaments**:
+- Fixed entry fee
+- Guaranteed prize pool
+- Satellite qualifiers
+- Freeroll events
+
+#### 7.2.2 Team Battle Mode
+
+**4v4 Format**:
+- Two teams of 4 players
+- Bet on winning team
+- Individual performance bets
+- Team accumulator scoring
+
+**Faction Wars**:
+- Permanent team allegiance
+- Seasonal competitions
+- Loyalty rewards
+- Team-based bonuses
+
+### 7.3 Enhanced Features
+
+#### 7.3.1 Social Features
+
+**Enhanced Spectator Mode**:
+- Chat functionality
+- Emoji reactions
+- Share spectacular eliminations
+- Spectator leaderboards
+
+**Leaderboards**:
+- Daily/Weekly/Monthly
+- Biggest wins
+- Win streaks
+- ROI rankings
+
+**Achievements**:
+- Betting milestones
+- Prediction accuracy
+- Special event participation
+- Unlockable rewards
+
+#### 7.3.2 Personalization
+
+**AI-Powered Insights**:
+- Betting pattern analysis
+- Suggested bets
+- Risk profiling
+- Performance tracking
+
+**Customization**:
+- Favorite players
+- Custom alerts
+- Personalized odds display
+- Theme selection
+
+### 7.4 Technical Enhancements
+
+#### 7.4.1 Performance Optimizations
+
+**Edge Computing**:
+- CDN-based bet validation
+- Regional processing nodes
+- Reduced latency globally
+- Local regulation compliance
+
+**Blockchain Integration**:
+- Transparent RNG verification
+- Immutable bet records
+- Smart contract settlements
+- Cryptocurrency payments
+
+#### 7.4.2 Advanced Analytics
+
+**Real-Time Analytics**:
+- Live odds calculation
+- Player behavior prediction
+- Fraud detection ML models
+- Dynamic limit adjustment
+
+**Big Data Platform**:
+- Hadoop/Spark for analysis
+- Real-time data streaming
+- Predictive modeling
+- A/B testing framework
+
+### 7.5 Platform Expansions
+
+#### 7.5.1 Multi-Platform Support
+
+**Mobile Native Apps**:
+- iOS/Android native
+- Optimized performance
+- Push notifications
+- Biometric authentication
+
+**TV/Console Apps**:
+- Smart TV applications
+- Gaming console integration
+- Remote control optimization
+- Second screen experience
+
+#### 7.5.2 API Marketplace
+
+**Third-Party Integration**:
+- Odds comparison sites
+- Affiliate program API
+- Statistics providers
+- Streaming platforms
+
+**White Label Solution**:
+- Customizable branding
+- Multi-tenant architecture
+- Revenue sharing models
+- Turnkey deployment
+
+### 7.6 Regulatory Adaptations
+
+#### 7.6.1 Jurisdiction Expansion
+
+**Market-Specific Features**:
+- Localized payment methods
+- Currency support expansion
+- Language localization
+- Cultural adaptations
+
+**Compliance Automation**:
+- Auto-applying local limits
+- Jurisdiction-based feature toggle
+- Automated reporting
+- Tax calculation
+
+#### 7.6.2 Enhanced Responsible Gaming
+
+**AI-Powered Protection**:
+- Problem gambling detection
+- Predictive intervention
+- Personalized limits
+- Behavioral nudges
+
+**Self-Control Tools**:
+- Budget planning
+- Win/loss notifications
+- Time-out reminders
+- Peer comparison
+
+### 7.7 Content Variations
+
+#### 7.7.1 Themed Events
+
+**Seasonal Themes**:
+- Holiday special events
+- Sports tie-ins
+- Cultural celebrations
+- Limited-time modes
+
+**Branded Collaborations**:
+- Celebrity players
+- Esports crossovers
+- Movie/TV tie-ins
+- Influencer events
+
+#### 7.7.2 Dynamic Content
+
+**Procedural Generation**:
+- Random map elements
+- Variable elimination methods
+- Special power-ups
+- Environmental hazards
+
+**User-Generated Content**:
+- Custom elimination videos
+- Player-created challenges
+- Community voting
+- Mod support
+
+### 7.8 Implementation Priority
+
+#### Phase 1 (3-6 months)
+1. Inter-match features e tournament mode
+2. Mobile native apps
+3. Basic tournament mode
+4. Leaderboards and achievements
+
+#### Phase 2 (6-12 months)
+1. Team battle mode
+2. AI-powered insights
+3. Blockchain RNG verification
+4. Multi-currency support
+
+#### Phase 3 (12-18 months)
+1. Full tournament platform
+2. White label solution
+3. API marketplace
+4. Advanced social features
+
+#### Phase 4 (18-24 months)
+1. TV/Console apps
+2. Procedural content
+3. Global jurisdiction expansion
+4. Complete platform ecosystem
+
+### 7.9 Success Metrics
+
+**Player Engagement**:
+- Average session duration > 30 min
+- Return rate > 60% daily
+- Bet frequency increase 20%
+- Social interaction rate > 40%
+
+**Business Metrics**:
+- Revenue per user increase 30%
+- Cost per acquisition decrease 20%
+- Lifetime value increase 50%
+- Market share growth 10% yearly
+
+**Technical Metrics**:
+- 99.95% uptime
+- < 100ms latency globally
+- Zero security breaches
+- 100% regulatory compliance
+
+---
+
+## DOCUMENT SUMMARY
+
+Questo documento definisce l'architettura completa del sistema RAWWAR, un battle royale gambling game per 8 giocatori virtuali. Il sistema implementa un'**architettura multi-stanza parallela** con 5 servizi principali:
+
+1. **Frontend**: Interfaccia utente con gestione betting, visualizzazione eliminazioni, connessione a stanza specifica
+
+2. **Orchestrator Service**: Load balancer che gestisce creazione stanze, assegnazione giocatori, e scaling dinamico
+
+3. **Room Backend Services**: Istanze indipendenti per ogni stanza, ciascuna gestisce proprio match lifecycle, bet processing, e settlement
+
+4. **RGS Service**: Gateway tra game e casino che gestisce sessioni, transazioni wallet (seamless/segregated), compliance e limiti
+
+5. **Casino Service**: Mock dell'operatore reale che mantiene wallet, KYC/AML, responsible gaming
+
+Il documento include:
+- Architettura multi-stanza per scalabilità infinita (1.000-5.000 spettatori per stanza)
+- Specifiche funzionali dettagliate per ogni servizio
+- Provably fair con hash pubblicato pre-match e CSPRNG certificato
+- GDPR compliance con anonimizzazione post-retention
+- NO autoplay/auto-enrollment per compliance rigorosa
+
+Ogni stanza opera indipendentemente su cicli di 82-88 secondi (60s betting, 1s buffer, 14-20s playing, 7s results) con sequenza di eliminazione unica. Il sistema scala da Pre-Production (100 utenti) a Production (500k concurrent users) attraverso creazione dinamica di stanze.
+
+Video assets: matrice 8×7 killer-victim = 56 combinazioni × 10 varianti = 560 video totali. Posizioni corrette: Winner = Posizione 1, First to Die = Posizione 8.

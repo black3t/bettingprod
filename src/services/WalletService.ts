@@ -2,11 +2,20 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, transaction } from '../config/database';
 import { redis } from '../config/redis';
 import { logger, logPlayerOperation } from '../utils/logger';
+import { createHash } from 'crypto';
 import { CasinoErrorCodes } from '../utils/errorCodes';
 import { webhookSender } from './WebhookSender';
 import { toMinor, toMajor } from '../utils/money';
 import { PlayerService } from './PlayerService';
 import { responsibleGamingService } from './ResponsibleGamingService';
+
+// === Unified idempotency hit logger (no PII) ===
+function logIdmpHit(op: 'debit'|'credit'|'cancel', key: string, correlationId?: string) {
+  try {
+    const keyHash = createHash('sha256').update(String(key)).digest('hex').slice(0,16);
+    logger.info('IDEMPOTENCY_HIT', { op, keyHash, correlationId });
+  } catch { /* logging must not break flow */ }
+}
 
 // === PROD IDMP helpers (48h, single-source) ===
 type IdmpEnvelope = { exp: string; payload: any };
@@ -96,7 +105,7 @@ export class WalletService {
   async debit(operation: WalletOperation): Promise<WalletResponse> {
     if (operation?.idempotencyKey) {
       const hit = await idmpGet(operation.idempotencyKey);
-      if (hit) { logger.info('Idempotency hit (debit)', { correlationId: operation.correlationId }); return hit; }
+      if (hit) { logIdmpHit('debit', operation.idempotencyKey, operation.correlationId); return hit; }
     }
     
     // Check Responsible Gaming restrictions
@@ -271,7 +280,7 @@ export class WalletService {
   async credit(operation: WalletOperation): Promise<WalletResponse> {
     if (operation?.idempotencyKey) {
       const hit = await idmpGet(operation.idempotencyKey);
-      if (hit) { logger.info('Idempotency hit (credit)', { correlationId: operation.correlationId }); return hit; }
+      if (hit) { logIdmpHit('credit', operation.idempotencyKey, operation.correlationId); return hit; }
     }
     
     // Valida currency
@@ -409,7 +418,7 @@ export class WalletService {
     try {
       if (idempotencyKey) {
         const hit = await idmpGet(idempotencyKey);
-        if (hit) { logger.info('Idempotency hit (cancel)', { correlationId }); return hit; }
+        if (hit) { logIdmpHit('cancel', idempotencyKey, correlationId); return hit; }
       }
 
       // Use transaction pattern from debit/credit
@@ -536,6 +545,7 @@ export class WalletService {
         
         const canonicalResponse = this.canonicalizeResponse(resp);
         // Legacy: await this.storeIdempotency(idempotencyKey, canonicalResponse, client);
+        await idmpPutTx(client, idempotencyKey, canonicalResponse);
         
         return canonicalResponse;
       });

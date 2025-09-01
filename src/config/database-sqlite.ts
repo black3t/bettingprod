@@ -9,6 +9,15 @@ import fs from 'fs';
 let db: Database | null = null;
 let dbInitialized = false;
 
+let ACTIVE_DB_PATH_ABS = '';
+export function getActiveDbPath(): string { return ACTIVE_DB_PATH_ABS; }
+
+function resolveDbPath(): string {
+  const raw = process.env.DB_PATH || 'casino.db';
+  const abs = path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+  return abs;
+}
+
 export async function healthDbCheck(): Promise<boolean> {
   try {
     if (process.env.USE_SQLITE === 'true') {
@@ -29,8 +38,9 @@ export async function initSQLite() {
     return db;
   }
   // Use absolute path for SQLite database
-  const dbPath = path.join(process.cwd(), 'casino.db');
-  logger.info(`Creating SQLite database at: ${dbPath}`);
+  const dbPath = resolveDbPath();
+  ACTIVE_DB_PATH_ABS = dbPath;
+  logger.info(`[DB] sqlite path=${dbPath}`);
   
   try {
     // Open database with serialized mode

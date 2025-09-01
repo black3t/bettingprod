@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { logger } from '../utils/logger';
-import { querySQLite, transactionSQLite, initSQLite } from './database-sqlite';
+import { querySQLite, transactionSQLite, initSQLite, getActiveDbPath } from './database-sqlite';
 
 // Check if we're in test mode (use SQLite) or production mode (use PostgreSQL)
 const USE_SQLITE = process.env.USE_SQLITE === 'true' || process.env.NODE_ENV === 'test';
@@ -34,6 +34,7 @@ if (!USE_SQLITE) {
 }
 
 export { pool };
+export { getActiveDbPath };
 
 export async function query(text: string, params?: any[]) {
   const start = Date.now();

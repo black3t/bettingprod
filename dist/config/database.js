@@ -1,11 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.pool = void 0;
+exports.getActiveDbPath = exports.pool = void 0;
 exports.query = query;
 exports.transaction = transaction;
 const pg_1 = require("pg");
 const logger_1 = require("../utils/logger");
 const database_sqlite_1 = require("./database-sqlite");
+Object.defineProperty(exports, "getActiveDbPath", { enumerable: true, get: function () { return database_sqlite_1.getActiveDbPath; } });
 // Check if we're in test mode (use SQLite) or production mode (use PostgreSQL)
 const USE_SQLITE = process.env.USE_SQLITE === 'true' || process.env.NODE_ENV === 'test';
 let pool = null;

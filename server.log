@@ -1,13 +1,13 @@
-[dotenv@17.2.1] injecting env (14) from .env -- tip: 📡 version env with Radar: https://dotenvx.com/radar
-[BOOT] 2025-08-27T14:32:28.461Z express 5.1.0
+[dotenv@17.2.1] injecting env (15) from .env -- tip: ⚙️  override existing env vars with { override: true }
+[BOOT] 2025-08-28T18:59:38.840Z express 5.1.0
 [MOUNT] Casino routes at: /casino/api/v1
 [MOUNT] Casino health at: /casino/api/v1/health
 [MOUNT] Creating RGS router
 [MOUNT] RGS router at: /rgs/api/v1
 === ENV VALUES ===
-NODE_ENV: test
-API_BASE_PATH: /casino/api/v1
-RGS_BASE_PATH: /rgs/api/v1
+NODE_ENV: development
+API_BASE_PATH: undefined
+RGS_BASE_PATH: undefined
 ORCH_ENABLED: undefined
 ORCH_BASE_PATH: undefined
 COMPAT_ROUTES: undefined
@@ -24,4 +24,11 @@ RGS_BASE_PATH charCodes: [
   97, 112, 105,  47, 118,
   49
 ]
-[TOP] POST /casino/api/v1/wallet/debit
+[TOP] POST /rgs/api/v1/credit
+[RGS] POST /rgs/api/v1/credit path= /credit
+[TOP] POST /rgs/api/v1/credit
+[RGS] POST /rgs/api/v1/credit path= /credit
+[TOP] POST /rgs/api/v1/cancel
+[RGS] POST /rgs/api/v1/cancel path= /cancel
+[TOP] POST /rgs/api/v1/cancel
+[RGS] POST /rgs/api/v1/cancel path= /cancel

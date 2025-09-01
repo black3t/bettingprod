@@ -5,10 +5,19 @@ const uuid_1 = require("uuid");
 const database_1 = require("../config/database");
 const redis_1 = require("../config/redis");
 const logger_1 = require("../utils/logger");
+const crypto_1 = require("crypto");
 const errorCodes_1 = require("../utils/errorCodes");
 const money_1 = require("../utils/money");
 const PlayerService_1 = require("./PlayerService");
 const ResponsibleGamingService_1 = require("./ResponsibleGamingService");
+// === Unified idempotency hit logger (no PII) ===
+function logIdmpHit(op, key, correlationId) {
+    try {
+        const keyHash = (0, crypto_1.createHash)('sha256').update(String(key)).digest('hex').slice(0, 16);
+        logger_1.logger.info('IDEMPOTENCY_HIT', { op, keyHash, correlationId });
+    }
+    catch { /* logging must not break flow */ }
+}
 function exp48hISO() { return new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(); }
 // Read by key (prima della business logic)
 async function idmpGet(key) {
@@ -71,7 +80,7 @@ class WalletService {
         if (operation?.idempotencyKey) {
             const hit = await idmpGet(operation.idempotencyKey);
             if (hit) {
-                logger_1.logger.info('Idempotency hit (debit)', { correlationId: operation.correlationId });
+                logIdmpHit('debit', operation.idempotencyKey, operation.correlationId);
                 return hit;
             }
         }
@@ -219,7 +228,7 @@ class WalletService {
         if (operation?.idempotencyKey) {
             const hit = await idmpGet(operation.idempotencyKey);
             if (hit) {
-                logger_1.logger.info('Idempotency hit (credit)', { correlationId: operation.correlationId });
+                logIdmpHit('credit', operation.idempotencyKey, operation.correlationId);
                 return hit;
             }
         }
@@ -328,7 +337,7 @@ class WalletService {
             if (idempotencyKey) {
                 const hit = await idmpGet(idempotencyKey);
                 if (hit) {
-                    logger_1.logger.info('Idempotency hit (cancel)', { correlationId });
+                    logIdmpHit('cancel', idempotencyKey, correlationId);
                     return hit;
                 }
             }
@@ -432,6 +441,7 @@ class WalletService {
                 };
                 const canonicalResponse = this.canonicalizeResponse(resp);
                 // Legacy: await this.storeIdempotency(idempotencyKey, canonicalResponse, client);
+                await idmpPutTx(client, idempotencyKey, canonicalResponse);
                 return canonicalResponse;
             });
             // Response già salvata nella transazione
